@@ -225,7 +225,7 @@ impl HttpResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
     use std::io::Cursor;
     use std::sync::mpsc;

@@ -1,10 +1,10 @@
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
-ARG RUNNER_VERSION=2.327.1
+ARG RUNNER_VERSION=2.334.0
 ARG TARGETARCH=amd64
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y bash ca-certificates curl git jq libicu72 \
+    && apt-get install --no-install-recommends -y bash ca-certificates curl git jq libicu76 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --shell /usr/sbin/nologin runner \
