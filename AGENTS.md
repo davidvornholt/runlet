@@ -12,6 +12,11 @@ This file is the root operating contract for agents in this repository. Keep roo
 
 Before generating code, inspect the `description` frontmatter for every local skill at `.agents/skills/<name>/SKILL.md`.
 
+## Rust module size and focus
+
+- Prefer focused Rust modules with one clear responsibility.
+- Treat Rust files over roughly 200–400 lines as a prompt to consider splitting, especially when they contain multiple responsibilities.
+
 ## Testing
 
 - Add or update tests for behavior you changed.
