@@ -92,6 +92,22 @@ NixOS host
     └── enforces timeouts
 ```
 
+## Persistence
+
+Runlet should maintain small durable local state for orchestration and cleanup.
+
+Use SQLite as the default persistence layer.
+
+Persistent state may include:
+
+- known runner registrations
+- in-flight job records
+- cleanup/revocation status
+- cache metadata
+- recent job lifecycle events for debugging
+
+Job workspaces, runner tokens, and containers remain ephemeral. Only orchestration metadata should persist.
+
 ## Security model
 
 Every CI job gets:
