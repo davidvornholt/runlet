@@ -148,7 +148,7 @@ in
 
       runnerImage = lib.mkOption {
         type = lib.types.str;
-        example = "ghcr.io/org/runlet-actions-runner:latest";
+        example = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0";
         description = "OCI image containing the runlet-runner-entrypoint binary and GitHub Actions runner installation.";
       };
 

@@ -147,7 +147,7 @@ default_cpu = 2
 default_memory = "4G"
 default_disk = "20G"
 default_timeout = "20m"
-runner_image = "ghcr.io/org/runlet-actions-runner:latest"
+runner_image = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0"
 jobs_dir = "/var/lib/runlet/jobs"
 
 [cache]

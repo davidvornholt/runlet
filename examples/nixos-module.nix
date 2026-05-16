@@ -21,7 +21,7 @@
       defaultMemory = "4G";
       defaultDisk = "20G";
       defaultTimeout = "20m";
-      runnerImage = "ghcr.io/org/runlet-actions-runner:latest";
+      runnerImage = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0";
     };
 
     cache = {

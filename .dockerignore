@@ -1,0 +1,14 @@
+.git
+.github
+.pi
+target
+result
+result-*
+.DS_Store
+*.swp
+*.tmp
+.env
+config*.toml
+*.pem
+*.key
+*.sqlite3

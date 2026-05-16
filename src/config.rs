@@ -346,7 +346,7 @@ mod tests {
                 default_memory = "4G"
                 default_disk = "20G"
                 default_timeout = "20m"
-                runner_image = "ghcr.io/org/runlet-actions-runner:latest"
+                runner_image = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0"
 
                 [cache]
                 enable = true
@@ -396,7 +396,8 @@ mod tests {
         config.github.installation_id = 1;
         config.github.private_key_file = "/run/secrets/github-app.pem".into();
         config.orchestrator.webhook_secret_file = "/run/secrets/github-webhook".into();
-        config.runtime.runner_image = "ghcr.io/org/runlet-actions-runner:latest".to_string();
+        config.runtime.runner_image =
+            "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0".to_string();
         config.orchestrator.cleanup_interval = "soon".to_string();
 
         assert!(matches!(
@@ -443,7 +444,7 @@ mod tests {
                 webhook_secret_file = "/run/secrets/github-webhook"
 
                 [runtime]
-                runner_image = "ghcr.io/org/runlet-actions-runner:latest"
+                runner_image = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0"
 
                 [repositories."github:org/project"]
                 enabled = true

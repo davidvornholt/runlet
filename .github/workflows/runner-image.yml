@@ -1,0 +1,106 @@
+name: Runner image
+
+on:
+  pull_request:
+    paths:
+      - .dockerignore
+      - .github/workflows/runner-image.yml
+      - Cargo.lock
+      - Cargo.toml
+      - images/actions-runner/Containerfile
+      - src/**
+  push:
+    branches:
+      - main
+    tags:
+      - v*
+    paths:
+      - .dockerignore
+      - .github/workflows/runner-image.yml
+      - Cargo.lock
+      - Cargo.toml
+      - images/actions-runner/Containerfile
+      - src/**
+  workflow_dispatch:
+    inputs:
+      runner_version:
+        description: GitHub Actions runner version to include in the image
+        required: false
+        default: 2.334.0
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/runlet-actions-runner
+  RUNNER_VERSION: ${{ inputs.runner_version || '2.334.0' }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build runner image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=runner-${{ env.RUNNER_VERSION }},enable={{is_default_branch}}
+            type=match,pattern=v(.*),group=1,suffix=-runner-${{ env.RUNNER_VERSION }}
+
+      - name: Build and publish runner image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/actions-runner/Containerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            RUNNER_VERSION=${{ env.RUNNER_VERSION }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+          push: ${{ github.event_name != 'pull_request' }}
+
+      - name: Verify public image access
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          docker logout ghcr.io || true
+          image="$(printf '%s\n' "${IMAGE_TAGS}" | head -n 1)"
+          for attempt in {1..6}; do
+            if docker buildx imagetools inspect "${image}" >/dev/null; then
+              echo "${image} is publicly readable"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::${image} is not publicly readable. Set the GHCR package visibility to public, then rerun this workflow."
+          exit 1

@@ -1,7 +1,27 @@
+# syntax=docker/dockerfile:1.7
+
+FROM rust:1-bookworm AS builder
+
+WORKDIR /src
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    mkdir -p /out \
+    && cargo build --release --bin runlet-runner-entrypoint \
+    && cp target/release/runlet-runner-entrypoint /out/runlet-runner-entrypoint
+
 FROM debian:trixie-slim
 
 ARG RUNNER_VERSION=2.334.0
 ARG TARGETARCH=amd64
+
+LABEL org.opencontainers.image.title="Runlet GitHub Actions runner" \
+      org.opencontainers.image.description="GitHub Actions runner image for Runlet-managed ephemeral runners" \
+      org.opencontainers.image.source="https://github.com/davidvornholt/runlet" \
+      org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y bash ca-certificates curl git jq libicu76 \
@@ -23,6 +43,9 @@ RUN case "${TARGETARCH}" in \
       "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${runner_arch}-${RUNNER_VERSION}.tar.gz" \
       | tar --extract --gzip --no-same-owner
 
-COPY --chown=runner:runner runlet-runner-entrypoint /usr/local/bin/runlet-runner-entrypoint
+USER root
+COPY --from=builder /out/runlet-runner-entrypoint /usr/local/bin/runlet-runner-entrypoint
+RUN chmod 0755 /usr/local/bin/runlet-runner-entrypoint
+USER runner
 
 ENTRYPOINT ["/usr/local/bin/runlet-runner-entrypoint"]

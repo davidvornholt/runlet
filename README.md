@@ -40,20 +40,111 @@ Print a starter TOML configuration:
 runlet print-default-config > config.example.toml
 ```
 
-For a deployment, create a GitHub App, install it on the repositories Runlet
-should serve, and configure a `workflow_job` webhook that points at
-`https://<host>/webhook`. The app needs enough repository access to create and
-remove self-hosted runner registrations. Store the GitHub App private key and
-webhook secret outside the Nix store, then reference their runtime paths from the
-Runlet configuration.
+For a deployment, continue with [Use Runlet in GitHub Actions](#use-runlet-in-github-actions).
 
-Build a runner image after compiling `runlet-runner-entrypoint`:
+## Use Runlet in GitHub Actions
 
-```bash
-cargo build --release --bin runlet-runner-entrypoint
-cp target/release/runlet-runner-entrypoint images/actions-runner/
-podman build -t ghcr.io/org/runlet-actions-runner:latest images/actions-runner
-```
+Follow these steps to move a workflow job from GitHub-hosted runners such as
+`ubuntu-latest` to Runlet-managed ephemeral self-hosted runners.
+
+1. Deploy Runlet for the repository.
+   - Use the public Runlet runner image or a derived image that contains the
+     GitHub Actions runner and `runlet-runner-entrypoint`:
+
+     ```toml
+     [runtime]
+     runner_image = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0"
+     ```
+
+     For unreleased testing, the workflow also publishes a mutable `main` tag.
+     For production, prefer a release tag or digest over `main` or `latest`.
+     The first publish may require setting the GHCR package visibility to public
+     in GitHub's package settings; the publish workflow verifies unauthenticated
+     image access and fails if the package remains private.
+
+   - Create a GitHub App, install it on the repository, subscribe it to the
+     `workflow_job` webhook event, and point the webhook at
+     `https://<runlet-host>/webhook`.
+   - Store the app private key and webhook secret outside git and outside the Nix
+     store, then reference those files from the Runlet configuration.
+   - Add the repository to Runlet configuration with the exact id
+     `github:<owner>/<repo>`, for example `github:octo-org/octo-repo`.
+
+2. Start the orchestrator and confirm that the configuration is valid.
+
+   ```bash
+   runlet --config /etc/runlet/config.toml validate-config
+   runlet --config /etc/runlet/config.toml init-db
+   runlet --config /etc/runlet/config.toml serve
+   ```
+
+   With the NixOS module, enable `services.runlet` instead and check the
+   `runlet-orchestrator` systemd service logs.
+
+3. In the repository, open the workflow file under `.github/workflows/` and find
+   each job that currently uses a GitHub-hosted runner:
+
+   ```yaml
+   jobs:
+     test:
+       runs-on: ubuntu-latest
+       steps:
+         - uses: actions/checkout@v4
+         - run: cargo test --all-features
+   ```
+
+4. Replace the GitHub-hosted runner label with the Runlet self-hosted labels.
+   Jobs must include `runlet`; Runlet ignores queued jobs without that label.
+
+   ```yaml
+   jobs:
+     test:
+       runs-on:
+         - self-hosted
+         - runlet
+       steps:
+         - uses: actions/checkout@v4
+         - run: cargo test --all-features
+   ```
+
+   Do not leave `ubuntu-latest`, `macos-latest`, or `windows-latest` in the same
+   `runs-on` value when you intend the job to use Runlet. Use only the
+   self-hosted labels that Runlet should register for the ephemeral runner.
+
+5. Add optional Runlet capability labels only when the repository policy allows
+   them. Runlet denies the job before runner registration if the policy does not
+   allow a requested capability.
+
+   ```yaml
+   jobs:
+     publish:
+       runs-on:
+         - self-hosted
+         - runlet
+         - runlet-registry-push
+   ```
+
+   Available capability labels are `runlet-secrets`, `runlet-registry-push`,
+   `runlet-deploy`, and `runlet-privileged`.
+
+6. Commit the workflow change and trigger the workflow with a push, pull request,
+   or `workflow_dispatch` event. In GitHub, the job should queue for a
+   self-hosted runner. Runlet receives the `workflow_job` event, creates a fresh
+   registration token, starts one runner container for the job, and removes the
+   runner when the job finishes.
+
+7. If the job stays queued, check these common causes:
+   - The job is missing the `runlet` label.
+   - The GitHub App is not installed on the repository that owns the workflow.
+   - The webhook is not subscribed to `workflow_job`, cannot reach
+     `/webhook`, or uses the wrong secret.
+   - The repository id in Runlet configuration does not match
+     `github:<owner>/<repo>`.
+   - A requested capability label is not allowed by the repository policy.
+
+To roll a job back to the default GitHub-hosted runner, change `runs-on` back to
+`ubuntu-latest` or another GitHub-hosted runner label and remove the Runlet
+capability labels.
 
 ## NixOS module
 
@@ -81,7 +172,7 @@ podman build -t ghcr.io/org/runlet-actions-runner:latest images/actions-runner
       defaultMemory = "4G";
       defaultDisk = "20G";
       defaultTimeout = "20m";
-      runnerImage = "ghcr.io/org/runlet-actions-runner:latest";
+      runnerImage = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0";
     };
 
     cache = {
@@ -155,10 +246,32 @@ capability:
 
 The repository includes `src/bin/runlet-runner-entrypoint.rs`, a runner
 bootstrap executable that directly invokes the GitHub Actions runner
-`config.sh` and `run.sh` with explicit arguments. A sample runner image recipe is
-provided at `images/actions-runner/Containerfile`; the configured runner image
-must contain the `runlet-runner-entrypoint` binary and the GitHub Actions runner
-installation.
+`config.sh` and `run.sh` with explicit arguments. Runlet publishes a public
+multi-architecture runner image at
+`ghcr.io/davidvornholt/runlet-actions-runner`. The image is tagged with release
+versions, `sha-<commit>`, `main`, `latest`, `runner-<actions-runner-version>`,
+and `<release>-runner-<actions-runner-version>`.
+
+GitHub may create new GHCR packages as private. After the first successful image
+push, set the package visibility to public in GitHub's package settings. The
+image workflow verifies unauthenticated access after publishing and fails if the
+package remains private.
+
+A sample runner image recipe is provided at `images/actions-runner/Containerfile`
+for operators who need to customize the image. Build it from the repository root
+so the recipe can compile `runlet-runner-entrypoint`:
+
+```bash
+podman build \
+  --file images/actions-runner/Containerfile \
+  --build-arg RUNNER_VERSION=2.334.0 \
+  --tag ghcr.io/org/runlet-actions-runner:custom \
+  .
+podman push ghcr.io/org/runlet-actions-runner:custom
+```
+
+The configured runner image must contain the `runlet-runner-entrypoint` binary
+and the GitHub Actions runner installation.
 
 ## Security considerations
 
