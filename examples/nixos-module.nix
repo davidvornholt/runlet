@@ -37,7 +37,7 @@
       publicPullRequests = {
         enabled = true;
         secrets = false;
-        network = "restricted";
+        network = "strict";
         cacheWrite = false;
         timeout = "15m";
       };

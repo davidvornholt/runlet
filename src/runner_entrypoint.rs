@@ -1,12 +1,14 @@
 use crate::process::ProcessSpec;
 use std::env;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunnerEntrypointConfig {
     pub runner_dir: PathBuf,
+    pub state_dir: Option<PathBuf>,
     pub name: String,
     pub repo_url: String,
     pub token: String,
@@ -26,6 +28,9 @@ impl RunnerEntrypointConfig {
             runner_dir: env::var_os("RUNNER_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("/actions-runner")),
+            state_dir: env::var_os("RUNNER_STATE_DIR")
+                .map(PathBuf::from)
+                .or_else(|| Some(PathBuf::from("/tmp/actions-runner"))),
             name: required_env("RUNNER_NAME")?,
             repo_url: required_env("RUNNER_REPO_URL")?,
             token: required_env("RUNNER_TOKEN")?,
@@ -34,6 +39,24 @@ impl RunnerEntrypointConfig {
                 .map(|value| value != "false")
                 .unwrap_or(true),
         })
+    }
+
+    pub fn prepare_writable_runner_dir(&mut self) -> Result<(), std::io::Error> {
+        if let Some(home) = env::var_os("HOME") {
+            fs::create_dir_all(home)?;
+        }
+        let Some(state_dir) = &self.state_dir else {
+            return Ok(());
+        };
+        if state_dir == &self.runner_dir {
+            return Ok(());
+        }
+        if state_dir.exists() {
+            fs::remove_dir_all(state_dir)?;
+        }
+        copy_dir_recursive(&self.runner_dir, state_dir)?;
+        self.runner_dir = state_dir.clone();
+        Ok(())
     }
 
     pub fn configure_command(&self) -> ProcessSpec {
@@ -68,6 +91,25 @@ impl RunnerEntrypointConfig {
     }
 }
 
+fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), std::io::Error> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_dir_recursive(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&source_path, &destination_path)?;
+        } else if file_type.is_symlink() {
+            let target = fs::read_link(&source_path)?;
+            std::os::unix::fs::symlink(target, destination_path)?;
+        }
+    }
+    Ok(())
+}
+
 fn required_env(name: &'static str) -> Result<String, RunnerEntrypointError> {
     env::var(name).map_err(|_| RunnerEntrypointError::MissingEnv(name))
 }
@@ -77,9 +119,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn prepares_writable_runner_copy() {
+        let directory = tempfile::tempdir().expect("tempdir should be created");
+        let source = directory.path().join("source");
+        let state = directory.path().join("state");
+        fs::create_dir_all(&source).expect("source should be created");
+        fs::write(source.join("config.sh"), "#!/bin/sh\n")
+            .expect("config script should be written");
+        fs::write(source.join("run.sh"), "#!/bin/sh\n").expect("run script should be written");
+
+        let mut config = RunnerEntrypointConfig {
+            runner_dir: source,
+            state_dir: Some(state.clone()),
+            name: "runlet-1".to_string(),
+            repo_url: "https://github.com/org/project".to_string(),
+            token: "token".to_string(),
+            labels: "self-hosted,runlet".to_string(),
+            ephemeral: true,
+        };
+
+        config
+            .prepare_writable_runner_dir()
+            .expect("runner copy should be prepared");
+
+        assert_eq!(config.runner_dir, state);
+        assert!(config.runner_dir.join("config.sh").exists());
+        assert!(config.runner_dir.join("run.sh").exists());
+    }
+
+    #[test]
     fn config_command_executes_runner_script_directly_without_shell() {
         let config = RunnerEntrypointConfig {
             runner_dir: "/actions-runner".into(),
+            state_dir: None,
             name: "runlet-1".to_string(),
             repo_url: "https://github.com/org/project".to_string(),
             token: "token".to_string(),

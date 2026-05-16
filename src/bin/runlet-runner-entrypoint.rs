@@ -4,7 +4,10 @@ use runlet::runner_entrypoint::RunnerEntrypointConfig;
 use std::env;
 
 fn main() -> anyhow::Result<()> {
-    let config = RunnerEntrypointConfig::from_env().context("runner environment is invalid")?;
+    let mut config = RunnerEntrypointConfig::from_env().context("runner environment is invalid")?;
+    config
+        .prepare_writable_runner_dir()
+        .context("failed to prepare writable GitHub Actions runner directory")?;
     env::remove_var("RUNNER_TOKEN");
 
     let configure = config.configure_command();

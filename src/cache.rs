@@ -1,6 +1,7 @@
 use crate::config::CacheConfig;
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -51,6 +52,12 @@ pub fn prepare_cache_mount(
         path: path.clone(),
         source,
     })?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o770)).map_err(|source| {
+        CacheError::CreateNamespace {
+            path: path.clone(),
+            source,
+        }
+    })?;
     Ok(Some(CacheMount {
         namespace,
         path,
@@ -86,6 +93,24 @@ mod tests {
             namespace_for_repository("github:org/project.name"),
             namespace_for_repository("github:org/project_name")
         );
+    }
+
+    #[test]
+    fn prepares_group_writable_cache_namespace() {
+        let directory = tempfile::tempdir().expect("tempdir should be created");
+        let config = CacheConfig {
+            enable: true,
+            backend: CacheBackend::Local,
+            path: directory.path().to_path_buf(),
+            allow_untrusted_write: false,
+        };
+
+        let mount = prepare_cache_mount(&config, "github:org/project", false)
+            .expect("cache mount should be prepared")
+            .expect("cache should be enabled");
+
+        let mode = fs::metadata(mount.path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o770);
     }
 
     #[test]

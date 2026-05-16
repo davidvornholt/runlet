@@ -64,7 +64,10 @@ Follow these steps to move a workflow job from GitHub-hosted runners such as
 
    - Create a GitHub App, install it on the repository, subscribe it to the
      `workflow_job` webhook event, and point the webhook at
-     `https://<runlet-host>/webhook`.
+     `https://<runlet-host>/webhook`. The app needs read/write access to
+     repository self-hosted runners for registration token creation and runner
+     removal, and read access to pull requests so Runlet can inspect changed
+     files and approval labels before running public pull request jobs.
    - Store the app private key and webhook secret outside git and outside the Nix
      store, then reference those files from the Runlet configuration.
    - Add the repository to Runlet configuration with the exact id
@@ -173,6 +176,26 @@ capability labels.
       defaultDisk = "20G";
       defaultTimeout = "20m";
       runnerImage = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0";
+
+      users.enable = true;
+
+      # Keep this at 1 for public pull request jobs on shared production hosts.
+      untrusted.maxConcurrentJobs = 1;
+      untrusted.readOnly = true;
+      untrusted.tmpfs = [
+        "/tmp:rw,nosuid,nodev,size=1G"
+        "/run:rw,nosuid,nodev,size=64M"
+      ];
+      untrusted.pidsLimit = 256;
+      untrusted.ulimitNofile = "1024:1024";
+      untrusted.ulimitNproc = "512:512";
+      untrusted.memorySwap = "memory";
+      untrusted.logDriver = "k8s-file";
+      untrusted.logSizeMax = "10m";
+
+      network.enableUntrustedFirewall = true;
+      storage.untrustedStorageRoot = "/var/lib/runlet/podman-untrusted";
+      storage.trustedStorageRoot = "/var/lib/runlet/podman-trusted";
     };
 
     cache = {
@@ -188,9 +211,15 @@ capability labels.
       publicPullRequests = {
         enabled = true;
         secrets = false;
-        network = "restricted";
+        network = "strict";
         cacheWrite = false;
         timeout = "15m";
+      };
+
+      workflowRisk = {
+        denyWorkflowFileChanges = true;
+        requireApprovalForWorkflowChanges = false;
+        additionalHighRiskPaths = [ "build.rs" "justfile" ];
       };
 
       trustedBranches = [ "main" "release/*" ];
@@ -203,6 +232,21 @@ capability labels.
   };
 }
 ```
+
+## Migration notes
+
+Existing single-user deployments should review the new NixOS defaults before
+switching production traffic. The module now creates `runlet-orchestrator`,
+`runlet-trusted`, and `runlet-untrusted`, writes separate Podman storage
+configuration for the trusted and untrusted homes, and grants the orchestrator
+narrow sudo rules to invoke Podman as the trusted or untrusted job user. Job
+staging files are group-readable only to the shared `runlet` group. Move or
+prune old rootless Podman state from the former `runlet` user after confirming
+no old jobs remain.
+
+If you deploy without the NixOS module, create equivalent users, subuid/subgid
+ranges, storage roots, quota-limited mounts, and UID-based egress firewall rules
+before enabling `runtime.users.enabled = true`.
 
 ## CLI
 
@@ -217,16 +261,23 @@ runlet print-default-config
 Runlet stores only orchestration metadata in SQLite. Job host staging data,
 runner tokens, and containers are treated as ephemeral data and are expected to
 be removed during cleanup. Runner work directories stay container-local so the
-configured Podman storage limit applies. Public pull request jobs use the
-`restricted` network
-policy by default, which keeps the runner on rootless Podman networking while
-disabling host loopback access so the runner can still register with GitHub.
+configured Podman storage limit applies.
+
+Public pull request jobs use the `strict` network policy by default. In the
+NixOS module this combines rootless Podman networking without host loopback with
+nftables rules for the untrusted Linux user that deny localhost, private,
+link-local, multicast, carrier-grade NAT, IPv6 ULA/link-local, and
+metadata-like ranges. Operators can add explicit proxy or firewall exceptions,
+but should prefer an egress proxy for HTTP(S) if private network access must be
+mediated. `runtime.network.allowCidrs` can add explicit CIDR exceptions that are
+accepted before the default private-network deny rules.
 
 GitHub should send `workflow_job` webhooks to `/webhook`. Jobs must include the
 `runlet` runner label before Runlet will allocate a runner. Runlet verifies
 `X-Hub-Signature-256`, creates a fresh registration token for each queued job,
-starts one rootless Podman runner container, enforces the repository policy and
-timeout, then removes the container, workspace, and runner registration. On
+checks pull request changed files for high-risk workflow paths, starts one
+rootless Podman runner container, enforces the repository policy and timeout,
+then removes the container, workspace, and runner registration. On
 startup, Runlet marks jobs left in allocated pre-cleanup states (`queued`,
 `running`, `succeeded`, or `failed`) as cleanup-pending; active jobs from the
 current daemon are not collected by the periodic cleanup pass.
@@ -282,7 +333,37 @@ and the GitHub Actions runner installation.
 - Do not expose a Docker socket to runner jobs. The NixOS module enables Podman
   and explicitly leaves the Docker socket disabled.
 - Public pull request jobs should keep `secrets = false`, `cacheWrite = false`,
-  and `network = "restricted"` unless you have reviewed the trust boundary.
+  `network = "strict"`, and `runtime.untrusted.maxConcurrentJobs = 1` unless you
+  have reviewed the trust boundary.
+- `strict` networking depends on host firewall integration. On NixOS the module
+  installs nftables rules keyed to the untrusted execution UID; on other systems
+  deploy equivalent nftables/iptables rules before accepting public pull
+  requests.
+- Mount `runtime.storage.trustedStorageRoot`,
+  `runtime.storage.untrustedStorageRoot`, and the cache path on separate
+  quota-limited filesystems to prevent CI images, layers, logs, caches, or
+  cleanup failures from filling production storage.
+- Workflow definitions, local composite actions, `action.yml`/`action.yaml`, and
+  configured build scripts are high risk. Public pull requests that change those
+  paths are denied by default before runner registration tokens are created. If
+  approval mode is enabled, apply the configured approval label and then rerun
+  the workflow job or redeliver the `workflow_job` webhook so Runlet can observe
+  the approval before creating a runner token.
+- Optional untrusted seccomp, AppArmor, and SELinux profiles can be configured
+  with `runtime.untrusted.seccompProfile`, `runtime.untrusted.apparmorProfile`,
+  and `runtime.untrusted.selinuxLabel`. The NixOS module installs
+  `/etc/runlet/seccomp-untrusted-example.json` as a conservative starting point
+  that denies `keyctl`, `bpf`, and `perf_event_open` families.
+- The NixOS service runs as `runlet-orchestrator` and enables compatible
+  systemd hardening including `PrivateTmp`, `ProtectSystem=strict`,
+  `ProtectHome`, kernel protection options, and
+  `LockPersonality`. `NoNewPrivileges` and `RestrictSUIDSGID` are intentionally
+  omitted because the orchestrator uses narrow sudo rules to hand Podman
+  execution to the trusted and untrusted users.
+  `PrivateDevices` is also omitted because rootless Podman networking and
+  storage may require host device nodes such as `/dev/net/tun` or `/dev/fuse`.
+- These controls reduce blast radius but do not provide VM-equivalent isolation:
+  untrusted containers still share the host kernel.
 - Treat runner images as part of the trusted computing base. Pin and rebuild the
   GitHub Actions runner version intentionally.
 

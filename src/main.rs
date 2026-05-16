@@ -150,6 +150,42 @@ default_timeout = "20m"
 runner_image = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0"
 jobs_dir = "/var/lib/runlet/jobs"
 
+[runtime.users]
+enabled = true
+orchestrator = "runlet-orchestrator"
+trusted = "runlet-trusted"
+untrusted = "runlet-untrusted"
+
+[runtime.trusted]
+max_concurrent_jobs = 4
+pids_limit = 2048
+ulimit_nofile = "4096:4096"
+ulimit_nproc = "2048:2048"
+ipc = "private"
+
+[runtime.untrusted]
+max_concurrent_jobs = 1
+cpu = 1
+memory = "2G"
+disk = "10G"
+timeout = "15m"
+read_only = true
+tmpfs = ["/tmp:rw,nosuid,nodev,size=1G", "/run:rw,nosuid,nodev,size=64M"]
+pids_limit = 256
+ulimit_nofile = "1024:1024"
+ulimit_nproc = "512:512"
+memory_swap = "memory"
+ipc = "private"
+log_driver = "k8s-file"
+log_size_max = "10m"
+disable_host_log_capture = true
+
+[runtime.network]
+enable_untrusted_firewall = true
+deny_cidrs = ["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/4", "::1/128", "fc00::/7", "fe80::/10"]
+allow_cidrs = []
+allow_tcp_ports = ["80", "443"]
+
 [cache]
 enable = false
 backend = "local"

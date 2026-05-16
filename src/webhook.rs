@@ -16,6 +16,8 @@ pub enum WebhookError {
     UnsupportedEvent(String),
     #[error("failed to parse webhook payload: {0}")]
     InvalidPayload(String),
+    #[error("pull request workflow_job payload did not include a pull request number")]
+    MissingPullRequestNumber,
     #[error("workflow_job action {0} is ignored")]
     IgnoredAction(String),
 }
@@ -28,6 +30,7 @@ pub struct JobRequest {
     pub branch: String,
     pub event: GitHubEventKind,
     pub labels: Vec<String>,
+    pub pull_request_numbers: Vec<u64>,
 }
 
 pub fn verify_signature(secret: &[u8], body: &[u8], signature: &str) -> Result<(), WebhookError> {
@@ -58,6 +61,15 @@ fn parse_workflow_job(body: &[u8]) -> Result<JobRequest, WebhookError> {
 
     let repository = format!("github:{}", payload.repository.full_name);
     let head_branch = payload.workflow_job.head_branch.unwrap_or_default();
+    let pull_request_numbers = payload
+        .workflow_job
+        .pull_requests
+        .iter()
+        .filter_map(|pull_request| pull_request.number)
+        .collect::<Vec<_>>();
+    if !payload.workflow_job.pull_requests.is_empty() && pull_request_numbers.is_empty() {
+        return Err(WebhookError::MissingPullRequestNumber);
+    }
     let event = if payload.workflow_job.pull_requests.is_empty() {
         if head_branch.starts_with("refs/tags/") {
             GitHubEventKind::Release
@@ -75,6 +87,7 @@ fn parse_workflow_job(body: &[u8]) -> Result<JobRequest, WebhookError> {
         branch: head_branch,
         event,
         labels: payload.workflow_job.labels,
+        pull_request_numbers,
     })
 }
 
@@ -91,7 +104,12 @@ struct WorkflowJob {
     head_branch: Option<String>,
     labels: Vec<String>,
     #[serde(default)]
-    pull_requests: Vec<serde_json::Value>,
+    pull_requests: Vec<WorkflowJobPullRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowJobPullRequest {
+    number: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,6 +181,15 @@ mod tests {
             .unwrap()
             .expect("queued event should produce a job");
         assert_eq!(request.event, GitHubEventKind::PullRequestFromFork);
+        assert_eq!(request.pull_request_numbers, [7]);
+    }
+
+    #[test]
+    fn rejects_pull_request_payloads_without_numbers() {
+        assert_eq!(
+            parse_event("workflow_job", &payload(r#"[{}]"#)).unwrap_err(),
+            WebhookError::MissingPullRequestNumber
+        );
     }
 
     #[test]

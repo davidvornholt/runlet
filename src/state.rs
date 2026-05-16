@@ -7,6 +7,7 @@ pub enum JobStatus {
     Running,
     Succeeded,
     Failed,
+    Held,
     CleanupPending,
     Cleaned,
 }
@@ -18,6 +19,7 @@ impl JobStatus {
             Self::Running => "running",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
+            Self::Held => "held",
             Self::CleanupPending => "cleanup_pending",
             Self::Cleaned => "cleaned",
         }
@@ -29,6 +31,7 @@ impl JobStatus {
             "running" => Self::Running,
             "succeeded" => Self::Succeeded,
             "failed" => Self::Failed,
+            "held" => Self::Held,
             "cleanup_pending" => Self::CleanupPending,
             "cleaned" => Self::Cleaned,
             _ => Self::Failed,
@@ -453,6 +456,9 @@ mod tests {
         store
             .upsert_job(&record("3", JobStatus::Failed))
             .expect("job should insert");
+        store
+            .upsert_job(&record("4", JobStatus::Held))
+            .expect("job should insert");
 
         store
             .mark_interrupted_jobs_cleanup_pending()
@@ -466,5 +472,7 @@ mod tests {
         assert_eq!(succeeded_job.status, JobStatus::CleanupPending);
         let failed_job = store.job("3").expect("job query should work").unwrap();
         assert_eq!(failed_job.status, JobStatus::CleanupPending);
+        let held_job = store.job("4").expect("job query should work").unwrap();
+        assert_eq!(held_job.status, JobStatus::Held);
     }
 }

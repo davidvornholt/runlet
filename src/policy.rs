@@ -1,4 +1,5 @@
-use crate::config::{Config, NetworkPolicy};
+use crate::config::{Config, NetworkPolicy, TrustClass};
+use crate::duration::parse_duration;
 use std::fmt;
 use thiserror::Error;
 
@@ -18,6 +19,7 @@ pub struct JobContext {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectivePolicy {
+    pub trust_class: TrustClass,
     pub secrets: SecretPolicy,
     pub registry_push: bool,
     pub deploy: bool,
@@ -104,6 +106,7 @@ pub fn decide(config: &Config, context: &JobContext) -> PolicyDecision {
             }
 
             PolicyDecision::Allow(EffectivePolicy {
+                trust_class: TrustClass::Untrusted,
                 secrets: SecretPolicy::False,
                 registry_push: false,
                 deploy: false,
@@ -111,7 +114,10 @@ pub fn decide(config: &Config, context: &JobContext) -> PolicyDecision {
                 cache_write: repository.public_pull_requests.cache_write
                     && config.cache.allow_untrusted_write,
                 privileged: false,
-                timeout: repository.public_pull_requests.timeout.clone(),
+                timeout: stricter_timeout(
+                    config.runtime.untrusted.timeout.as_deref(),
+                    &repository.public_pull_requests.timeout,
+                ),
             })
         }
         GitHubEventKind::BranchPush => {
@@ -122,24 +128,49 @@ pub fn decide(config: &Config, context: &JobContext) -> PolicyDecision {
             }
 
             PolicyDecision::Allow(EffectivePolicy {
+                trust_class: TrustClass::Trusted,
                 secrets: SecretPolicy::Limited,
                 registry_push: repository.trusted_jobs.allow_registry_push,
                 deploy: repository.trusted_jobs.allow_deploy,
                 network: NetworkPolicy::Normal,
                 cache_write: config.cache.enable,
                 privileged: false,
-                timeout: config.runtime.default_timeout.clone(),
+                timeout: config
+                    .runtime
+                    .trusted
+                    .timeout
+                    .clone()
+                    .unwrap_or_else(|| config.runtime.default_timeout.clone()),
             })
         }
         GitHubEventKind::Release => PolicyDecision::Allow(EffectivePolicy {
+            trust_class: TrustClass::Trusted,
             secrets: SecretPolicy::Allowed,
             registry_push: repository.trusted_jobs.allow_registry_push,
             deploy: repository.trusted_jobs.allow_deploy,
             network: NetworkPolicy::Normal,
             cache_write: config.cache.enable,
             privileged: false,
-            timeout: config.runtime.default_timeout.clone(),
+            timeout: config
+                .runtime
+                .trusted
+                .timeout
+                .clone()
+                .unwrap_or_else(|| config.runtime.default_timeout.clone()),
         }),
+    }
+}
+
+fn stricter_timeout(runtime_timeout: Option<&str>, policy_timeout: &str) -> String {
+    let Some(runtime_timeout) = runtime_timeout else {
+        return policy_timeout.to_string();
+    };
+    match (
+        parse_duration(runtime_timeout),
+        parse_duration(policy_timeout),
+    ) {
+        (Ok(runtime), Ok(policy)) if runtime < policy => runtime_timeout.to_string(),
+        _ => policy_timeout.to_string(),
     }
 }
 
@@ -186,6 +217,7 @@ mod tests {
                         allow_registry_push: true,
                         allow_deploy: false,
                     },
+                    ..RepositoryConfig::default()
                 },
             )]),
             ..Config::default()
@@ -193,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn untrusted_public_pull_request_gets_restricted_policy() {
+    fn untrusted_public_pull_request_gets_strict_policy() {
         let config = configured();
         let decision = decide(
             &config,
@@ -207,10 +239,44 @@ mod tests {
         let PolicyDecision::Allow(policy) = decision else {
             panic!("public pull request should be allowed");
         };
+        assert_eq!(policy.trust_class, TrustClass::Untrusted);
         assert_eq!(policy.secrets, SecretPolicy::False);
         assert!(!policy.cache_write);
         assert!(!policy.privileged);
-        assert_eq!(policy.network, NetworkPolicy::Restricted);
+        assert_eq!(policy.network, NetworkPolicy::Strict);
+        assert_eq!(policy.timeout, "15m");
+    }
+
+    #[test]
+    fn untrusted_timeout_uses_stricter_runtime_or_repository_limit() {
+        let mut config = configured();
+        config.runtime.untrusted.timeout = Some("10m".to_string());
+
+        let decision = decide(
+            &config,
+            &JobContext {
+                repository: "github:org/project".to_string(),
+                event: GitHubEventKind::PullRequestFromFork,
+                branch: "feature".to_string(),
+            },
+        );
+
+        let PolicyDecision::Allow(policy) = decision else {
+            panic!("public pull request should be allowed");
+        };
+        assert_eq!(policy.timeout, "10m");
+
+        config.runtime.untrusted.timeout = Some("20m".to_string());
+        let PolicyDecision::Allow(policy) = decide(
+            &config,
+            &JobContext {
+                repository: "github:org/project".to_string(),
+                event: GitHubEventKind::PullRequestFromFork,
+                branch: "feature".to_string(),
+            },
+        ) else {
+            panic!("public pull request should be allowed");
+        };
         assert_eq!(policy.timeout, "15m");
     }
 
@@ -229,6 +295,7 @@ mod tests {
         let PolicyDecision::Allow(policy) = decision else {
             panic!("trusted branch should be allowed");
         };
+        assert_eq!(policy.trust_class, TrustClass::Trusted);
         assert_eq!(policy.secrets, SecretPolicy::Limited);
         assert!(policy.registry_push);
         assert!(policy.cache_write);
@@ -254,10 +321,11 @@ mod tests {
     #[test]
     fn denied_capability_labels_block_jobs() {
         let policy = EffectivePolicy {
+            trust_class: TrustClass::Untrusted,
             secrets: SecretPolicy::False,
             registry_push: false,
             deploy: false,
-            network: NetworkPolicy::Restricted,
+            network: NetworkPolicy::Strict,
             cache_write: false,
             privileged: false,
             timeout: "15m".to_string(),

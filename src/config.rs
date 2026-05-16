@@ -35,6 +35,26 @@ pub enum ConfigError {
     InvalidTimeout,
     #[error("runtime.runner_image must not be empty")]
     MissingRunnerImage,
+    #[error("runtime.{profile}.max_concurrent_jobs must be at least 1")]
+    InvalidProfileConcurrency { profile: &'static str },
+    #[error("runtime.{profile}.{field} must be at least 1")]
+    InvalidProfileLimit {
+        profile: &'static str,
+        field: &'static str,
+    },
+    #[error("runtime.{profile}.{field} must not be empty")]
+    EmptyProfileValue {
+        profile: &'static str,
+        field: &'static str,
+    },
+    #[error("runtime.users.{field} must not be empty when runtime.users.enabled is true")]
+    EmptyExecutionUser { field: &'static str },
+    #[error("runtime.users orchestrator, trusted, and untrusted users must be distinct")]
+    NonDistinctExecutionUsers,
+    #[error("strict public pull request networking requires runtime.users.enabled = true")]
+    StrictNetworkRequiresUserSplit,
+    #[error("runtime.network.{field} must not be empty")]
+    EmptyNetworkValue { field: &'static str },
     #[error("{name} has an invalid duration: {source}")]
     InvalidDuration {
         name: String,
@@ -50,6 +70,8 @@ pub enum ConfigError {
     EmptyTrustedBranch { name: String },
     #[error("repository {name} cannot expose secrets to public pull requests")]
     PublicPullRequestSecrets { name: String },
+    #[error("repository {name} workflow risk path pattern must not be empty")]
+    EmptyWorkflowRiskPath { name: String },
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
@@ -110,6 +132,10 @@ impl Config {
         if self.runtime.runner_image.is_empty() {
             return Err(ConfigError::MissingRunnerImage);
         }
+        validate_profile("trusted", &self.runtime.trusted)?;
+        validate_profile("untrusted", &self.runtime.untrusted)?;
+        validate_users(&self.runtime.users)?;
+        validate_network_controls(&self.runtime.network)?;
         if self.orchestrator.listen_addr.is_empty() {
             return Err(ConfigError::InvalidListenAddr);
         }
@@ -138,6 +164,21 @@ impl Config {
                 &format!("repositories.{name}.public_pull_requests.timeout"),
                 &repository.public_pull_requests.timeout,
             )?;
+            if repository.public_pull_requests.enabled
+                && repository.public_pull_requests.network == NetworkPolicy::Strict
+                && !self.runtime.users.enabled
+            {
+                return Err(ConfigError::StrictNetworkRequiresUserSplit);
+            }
+            if repository
+                .workflow_risk
+                .high_risk_paths
+                .iter()
+                .chain(repository.workflow_risk.additional_high_risk_paths.iter())
+                .any(|pattern| pattern.trim().is_empty())
+            {
+                return Err(ConfigError::EmptyWorkflowRiskPath { name: name.clone() });
+            }
         }
         Ok(())
     }
@@ -150,6 +191,129 @@ fn validate_duration(name: &str, value: &str) -> Result<(), ConfigError> {
             name: name.to_string(),
             source,
         })
+}
+
+fn validate_profile(
+    profile_name: &'static str,
+    profile: &RuntimeProfileConfig,
+) -> Result<(), ConfigError> {
+    if profile.max_concurrent_jobs == 0 {
+        return Err(ConfigError::InvalidProfileConcurrency {
+            profile: profile_name,
+        });
+    }
+    if let Some(value) = profile.cpu {
+        if value == 0 {
+            return Err(ConfigError::InvalidProfileLimit {
+                profile: profile_name,
+                field: "cpu",
+            });
+        }
+    }
+    if let Some(value) = profile.pids_limit {
+        if value == 0 {
+            return Err(ConfigError::InvalidProfileLimit {
+                profile: profile_name,
+                field: "pids_limit",
+            });
+        }
+    }
+    for (field, value) in [
+        ("memory", profile.memory.as_deref()),
+        ("disk", profile.disk.as_deref()),
+        ("timeout", profile.timeout.as_deref()),
+        ("ulimit_nofile", profile.ulimit_nofile.as_deref()),
+        ("ulimit_nproc", profile.ulimit_nproc.as_deref()),
+        ("cpuset_cpus", profile.cpuset_cpus.as_deref()),
+        ("memory_swap", profile.memory_swap.as_deref()),
+        (
+            "seccomp_profile",
+            profile
+                .seccomp_profile
+                .as_ref()
+                .map(|path| path.to_string_lossy())
+                .as_deref(),
+        ),
+        ("apparmor_profile", profile.apparmor_profile.as_deref()),
+        ("selinux_label", profile.selinux_label.as_deref()),
+        ("log_driver", profile.log_driver.as_deref()),
+        ("log_size_max", profile.log_size_max.as_deref()),
+    ] {
+        if value.is_some_and(|value| value.trim().is_empty()) {
+            return Err(ConfigError::EmptyProfileValue {
+                profile: profile_name,
+                field,
+            });
+        }
+    }
+    if let Some(timeout) = &profile.timeout {
+        validate_duration(&format!("runtime.{profile_name}.timeout"), timeout)?;
+    }
+    if profile.tmpfs.iter().any(|value| value.trim().is_empty()) {
+        return Err(ConfigError::EmptyProfileValue {
+            profile: profile_name,
+            field: "tmpfs",
+        });
+    }
+    if profile
+        .device_read_bps
+        .iter()
+        .any(|value| value.trim().is_empty())
+    {
+        return Err(ConfigError::EmptyProfileValue {
+            profile: profile_name,
+            field: "device_read_bps",
+        });
+    }
+    if profile
+        .device_write_bps
+        .iter()
+        .any(|value| value.trim().is_empty())
+    {
+        return Err(ConfigError::EmptyProfileValue {
+            profile: profile_name,
+            field: "device_write_bps",
+        });
+    }
+    Ok(())
+}
+
+fn validate_users(users: &ExecutionUsersConfig) -> Result<(), ConfigError> {
+    if users.enabled {
+        if users.orchestrator.trim().is_empty() {
+            return Err(ConfigError::EmptyExecutionUser {
+                field: "orchestrator",
+            });
+        }
+        if users.trusted.trim().is_empty() {
+            return Err(ConfigError::EmptyExecutionUser { field: "trusted" });
+        }
+        if users.untrusted.trim().is_empty() {
+            return Err(ConfigError::EmptyExecutionUser { field: "untrusted" });
+        }
+        if users.orchestrator == users.trusted
+            || users.orchestrator == users.untrusted
+            || users.trusted == users.untrusted
+        {
+            return Err(ConfigError::NonDistinctExecutionUsers);
+        }
+    }
+    Ok(())
+}
+
+fn validate_network_controls(network: &NetworkControlsConfig) -> Result<(), ConfigError> {
+    for (field, values) in [
+        ("deny_cidrs", &network.deny_cidrs),
+        ("allow_cidrs", &network.allow_cidrs),
+        ("allow_hosts", &network.allow_hosts),
+        ("allow_tcp_ports", &network.allow_tcp_ports),
+        ("egress_proxy", &network.egress_proxy),
+    ] {
+        if values.iter().any(|value| value.trim().is_empty()) {
+            return Err(ConfigError::EmptyNetworkValue { field });
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -190,39 +354,10 @@ impl Default for OrchestratorConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct RuntimeConfig {
-    pub backend: RuntimeBackend,
-    pub max_concurrent_jobs: u32,
-    pub default_cpu: u32,
-    pub default_memory: String,
-    pub default_disk: String,
-    pub default_timeout: String,
-    pub runner_image: String,
-    pub jobs_dir: PathBuf,
-}
-
-impl Default for RuntimeConfig {
-    fn default() -> Self {
-        Self {
-            backend: RuntimeBackend::PodmanRootless,
-            max_concurrent_jobs: 4,
-            default_cpu: 2,
-            default_memory: "4G".to_string(),
-            default_disk: "20G".to_string(),
-            default_timeout: "20m".to_string(),
-            runner_image: String::new(),
-            jobs_dir: PathBuf::from("/var/lib/runlet/jobs"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum RuntimeBackend {
-    PodmanRootless,
-}
+pub use crate::runtime_config::{
+    CleanupConfig, ExecutionUsersConfig, IpcMode, NetworkControlsConfig, RuntimeBackend,
+    RuntimeConfig, RuntimeProfileConfig, StorageIsolationConfig, TrustClass,
+};
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -250,61 +385,9 @@ pub enum CacheBackend {
     Local,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct RepositoryConfig {
-    pub enabled: bool,
-    pub public_pull_requests: PublicPullRequestConfig,
-    pub trusted_branches: Vec<String>,
-    pub trusted_jobs: TrustedJobsConfig,
-}
-
-impl Default for RepositoryConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            public_pull_requests: PublicPullRequestConfig::default(),
-            trusted_branches: vec!["main".to_string()],
-            trusted_jobs: TrustedJobsConfig::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct PublicPullRequestConfig {
-    pub enabled: bool,
-    pub secrets: bool,
-    pub network: NetworkPolicy,
-    pub cache_write: bool,
-    pub timeout: String,
-}
-
-impl Default for PublicPullRequestConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            secrets: false,
-            network: NetworkPolicy::Restricted,
-            cache_write: false,
-            timeout: "20m".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum NetworkPolicy {
-    Restricted,
-    Normal,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
-#[serde(default)]
-pub struct TrustedJobsConfig {
-    pub allow_registry_push: bool,
-    pub allow_deploy: bool,
-}
+pub use crate::repository_config::{
+    NetworkPolicy, PublicPullRequestConfig, RepositoryConfig, TrustedJobsConfig, WorkflowRiskConfig,
+};
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -321,143 +404,5 @@ impl Default for StateConfig {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_plan_shaped_config() {
-        let config: Config = toml::from_str(
-            r#"
-                [github]
-                app_id = 123456
-                installation_id = 987654
-                private_key_file = "/run/secrets/github-app.pem"
-                api_base_url = "https://api.github.com"
-
-                [orchestrator]
-                listen_addr = "127.0.0.1:8080"
-                webhook_secret_file = "/run/secrets/github-webhook"
-                cleanup_interval = "60s"
-
-                [runtime]
-                backend = "podman-rootless"
-                max_concurrent_jobs = 4
-                default_cpu = 2
-                default_memory = "4G"
-                default_disk = "20G"
-                default_timeout = "20m"
-                runner_image = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0"
-
-                [cache]
-                enable = true
-                backend = "local"
-                path = "/var/cache/runlet"
-                allow_untrusted_write = false
-
-                [repositories."github:org/project"]
-                enabled = true
-                trusted_branches = ["main", "release/*"]
-
-                [repositories."github:org/project".public_pull_requests]
-                enabled = true
-                secrets = false
-                network = "restricted"
-                cache_write = false
-                timeout = "15m"
-
-                [repositories."github:org/project".trusted_jobs]
-                allow_registry_push = true
-                allow_deploy = false
-            "#,
-        )
-        .expect("config should parse");
-
-        config.validate().expect("config should be valid");
-        assert_eq!(config.runtime.backend, RuntimeBackend::PodmanRootless);
-        assert!(config.cache.enable);
-        assert_eq!(
-            config.repositories["github:org/project"].trusted_branches,
-            ["main", "release/*"]
-        );
-    }
-
-    #[test]
-    fn rejects_missing_github_credentials() {
-        let error = Config::default()
-            .validate()
-            .expect_err("config should fail");
-        assert!(matches!(error, ConfigError::MissingAppId));
-    }
-
-    #[test]
-    fn rejects_invalid_duration_values() {
-        let mut config = Config::default();
-        config.github.app_id = 1;
-        config.github.installation_id = 1;
-        config.github.private_key_file = "/run/secrets/github-app.pem".into();
-        config.orchestrator.webhook_secret_file = "/run/secrets/github-webhook".into();
-        config.runtime.runner_image =
-            "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0".to_string();
-        config.orchestrator.cleanup_interval = "soon".to_string();
-
-        assert!(matches!(
-            config.validate().unwrap_err(),
-            ConfigError::InvalidDuration { name, .. } if name == "orchestrator.cleanup_interval"
-        ));
-
-        config.orchestrator.cleanup_interval = "60s".to_string();
-        config.runtime.default_timeout = "20".to_string();
-        assert!(matches!(
-            config.validate().unwrap_err(),
-            ConfigError::InvalidDuration { name, .. } if name == "runtime.default_timeout"
-        ));
-
-        config.runtime.default_timeout = "20m".to_string();
-        config.repositories.insert(
-            "github:org/project".to_string(),
-            RepositoryConfig {
-                public_pull_requests: PublicPullRequestConfig {
-                    timeout: "later".to_string(),
-                    ..PublicPullRequestConfig::default()
-                },
-                ..RepositoryConfig::default()
-            },
-        );
-        assert!(matches!(
-            config.validate().unwrap_err(),
-            ConfigError::InvalidDuration { name, .. }
-                if name == "repositories.github:org/project.public_pull_requests.timeout"
-        ));
-    }
-
-    #[test]
-    fn rejects_public_pull_request_secrets() {
-        let config: Config = toml::from_str(
-            r#"
-                [github]
-                app_id = 123456
-                installation_id = 987654
-                private_key_file = "/run/secrets/github-app.pem"
-
-                [orchestrator]
-                listen_addr = "127.0.0.1:8080"
-                webhook_secret_file = "/run/secrets/github-webhook"
-
-                [runtime]
-                runner_image = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0"
-
-                [repositories."github:org/project"]
-                enabled = true
-
-                [repositories."github:org/project".public_pull_requests]
-                secrets = true
-            "#,
-        )
-        .unwrap();
-
-        assert!(matches!(
-            config.validate().unwrap_err(),
-            ConfigError::PublicPullRequestSecrets { .. }
-        ));
-    }
-}
+#[path = "config_tests.rs"]
+mod tests;

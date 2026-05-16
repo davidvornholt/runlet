@@ -19,6 +19,8 @@ pub enum GitHubError {
     Jwt(jsonwebtoken::errors::Error),
     #[error("GitHub request failed: {0}")]
     Request(reqwest::Error),
+    #[error("GitHub pull request {number} changed-file list reached GitHub's 3000-file API cap")]
+    PullRequestFileListTruncated { number: u64 },
     #[error("GitHub API returned {status}: {body}")]
     Api { status: StatusCode, body: String },
 }
@@ -77,6 +79,22 @@ struct RunnersResponse {
 #[derive(Debug, Deserialize)]
 struct Runner {
     id: u64,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestFile {
+    filename: String,
+    previous_filename: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestResponse {
+    labels: Vec<PullRequestLabel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestLabel {
     name: String,
 }
 
@@ -146,6 +164,79 @@ impl GitHubClient {
             .send()
             .map_err(GitHubError::Request)?;
         parse_response(response)
+    }
+
+    pub fn pull_request_changed_files(
+        &self,
+        repository: &RepositoryId,
+        pull_request_number: u64,
+    ) -> Result<Vec<String>, GitHubError> {
+        const PER_PAGE: usize = 100;
+        const MAX_FILES: usize = 3000;
+        let installation_token = self.installation_token()?;
+        let mut files = Vec::new();
+        for page in 1.. {
+            let url = format!(
+                "{}/repos/{}/{}/pulls/{}/files?per_page={PER_PAGE}&page={page}",
+                self.config.api_base_url.trim_end_matches('/'),
+                repository.owner,
+                repository.name,
+                pull_request_number
+            );
+            let response = self
+                .http
+                .get(url)
+                .bearer_auth(&installation_token)
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("User-Agent", "runlet")
+                .send()
+                .map_err(GitHubError::Request)?;
+            let page_files = parse_response::<Vec<PullRequestFile>>(response)?;
+            let count = page_files.len();
+            for file in page_files {
+                files.push(file.filename);
+                if let Some(previous_filename) = file.previous_filename {
+                    files.push(previous_filename);
+                }
+            }
+            if page >= MAX_FILES / PER_PAGE && count == PER_PAGE {
+                return Err(GitHubError::PullRequestFileListTruncated {
+                    number: pull_request_number,
+                });
+            }
+            if count < PER_PAGE {
+                return Ok(files);
+            }
+        }
+        unreachable!("unbounded changed-file pagination loop must return from inside the loop")
+    }
+
+    pub fn pull_request_has_label(
+        &self,
+        repository: &RepositoryId,
+        pull_request_number: u64,
+        label: &str,
+    ) -> Result<bool, GitHubError> {
+        let installation_token = self.installation_token()?;
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}",
+            self.config.api_base_url.trim_end_matches('/'),
+            repository.owner,
+            repository.name,
+            pull_request_number
+        );
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(&installation_token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "runlet")
+            .send()
+            .map_err(GitHubError::Request)?;
+        let pull_request = parse_response::<PullRequestResponse>(response)?;
+        Ok(pull_request.labels.iter().any(|item| item.name == label))
     }
 
     pub fn remove_runner_by_name(
