@@ -14,7 +14,7 @@ Before generating code, inspect the `description` frontmatter for every local sk
 
 ## Testing
 
-- Add or update tests for meaningful behavior changes.
+- Add or update tests for behavior you changed.
 - Prefer tests that protect behavior, state transitions, data contracts, parsing, error handling, and regression-prone cases.
 - Add focused success and failure coverage for new parsing, validation, policy, persistence, concurrency, or process-control logic.
 - Do not add tests that only pin trivial literals or states the type system already makes unrepresentable.
@@ -24,27 +24,17 @@ Before generating code, inspect the `description` frontmatter for every local sk
 
 - Update README, examples, and configuration docs when public behavior changes.
 
-## Testing and verification
+## Reader-facing text
 
-For code changes, run the narrowest meaningful checks first, then the broader repo checks when available.
-
-Expected checks for strict Rust projects:
-
-1. `cargo fmt --check`
-2. `cargo clippy --all-targets --all-features -- -D warnings`
-3. `cargo test --all-features`
-4. `cargo doc --no-deps`
-
-For documentation-only changes, run a narrower verification when the full check would not add useful signal. State what was run and why.
+- Use sentence case where sensible for reader-facing text, including UI text, button labels, command-style actions, and Markdown headings, while preserving proper nouns, acronyms, filenames, package names, and domain terms.
 
 ## Definition of done
 
 Use this as a feedback loop, not a ritual.
 
-1. Verify tests are proportional to the risk: New or changed logic has meaningful success and failure coverage.
+1. Add or update tests for behavior you changed.
 2. Search for stale references to changed concepts, names, paths, commands, options, policies, or public APIs.
-3. Run proportional verification for the files changed.
-4. If a check fails, read the full error, identify the root cause, fix it, and repeat the loop.
+3. Run `just check` before marking work done. If it fails, read the full error, fix the root cause, and run it again.
 
 ## Comments
 
