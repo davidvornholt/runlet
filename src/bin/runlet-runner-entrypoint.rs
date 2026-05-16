@@ -1,6 +1,11 @@
+#[path = "../runner_entrypoint_process.rs"]
+mod process;
+#[path = "../runner_entrypoint.rs"]
+mod runner_entrypoint;
+
 use anyhow::Context;
-use runlet::process::run;
-use runlet::runner_entrypoint::RunnerEntrypointConfig;
+use process::run;
+use runner_entrypoint::RunnerEntrypointConfig;
 use std::env;
 
 fn main() -> anyhow::Result<()> {
