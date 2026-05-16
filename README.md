@@ -15,6 +15,46 @@ The current implementation provides the Runlet appliance foundation:
   Docker socket, creates service state directories, and installs the
   `runlet-orchestrator` systemd service
 
+Runlet is early software. Review the configuration and security model before
+connecting it to repositories that run untrusted pull request code.
+
+## Quick start
+
+Build or enter a development shell with Nix:
+
+```bash
+nix build .#runlet
+nix develop
+```
+
+Without Nix, use the Rust toolchain directly:
+
+```bash
+cargo build --release
+cargo test --all-features
+```
+
+Print a starter TOML configuration:
+
+```bash
+runlet print-default-config > config.example.toml
+```
+
+For a deployment, create a GitHub App, install it on the repositories Runlet
+should serve, and configure a `workflow_job` webhook that points at
+`https://<host>/webhook`. The app needs enough repository access to create and
+remove self-hosted runner registrations. Store the GitHub App private key and
+webhook secret outside the Nix store, then reference their runtime paths from the
+Runlet configuration.
+
+Build a runner image after compiling `runlet-runner-entrypoint`:
+
+```bash
+cargo build --release --bin runlet-runner-entrypoint
+cp target/release/runlet-runner-entrypoint images/actions-runner/
+podman build -t ghcr.io/org/runlet-actions-runner:latest images/actions-runner
+```
+
 ## NixOS module
 
 ```nix
@@ -120,10 +160,24 @@ provided at `images/actions-runner/Containerfile`; the configured runner image
 must contain the `runlet-runner-entrypoint` binary and the GitHub Actions runner
 installation.
 
+## Security considerations
+
+- Keep GitHub App private keys, webhook secrets, registration tokens, and local
+  deployment TOML files out of git. The repository `.gitignore` covers common
+  local filenames, but operators should still use a secret manager for deployed
+  systems.
+- Do not expose a Docker socket to runner jobs. The NixOS module enables Podman
+  and explicitly leaves the Docker socket disabled.
+- Public pull request jobs should keep `secrets = false`, `cacheWrite = false`,
+  and `network = "restricted"` unless you have reviewed the trust boundary.
+- Treat runner images as part of the trusted computing base. Pin and rebuild the
+  GitHub Actions runner version intentionally.
+
 ## Development
 
 ```bash
 just check
 ```
 
-The check command runs formatting, clippy, and tests for the Rust code.
+The check command verifies formatting, clippy, and tests for the Rust code. Use
+`just check-fix` to apply Rust formatting before running clippy and tests.

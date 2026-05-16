@@ -39,7 +39,7 @@ Use this as a feedback loop, not a ritual.
 
 1. Add or update tests for behavior you changed.
 2. Search for stale references to changed concepts, names, paths, commands, options, policies, or public APIs.
-3. Run `just check` before marking work done. If it fails, read the full error, fix the root cause, and run it again.
+3. Run `just check-fix` before marking work done. If it fails, read the full error, fix the root cause, and run it again.
 
 ## Comments
 

@@ -1,1 +1,31 @@
+# Rust and Nix build outputs
 /target/
+/result
+/result-*
+
+# Local development environments
+.direnv/
+.envrc
+
+# Local runtime configuration, state, and generated token files
+.env
+.env.*
+!.env.example
+/config.toml
+/config.*.toml
+!*.example.toml
+*.local.toml
+*.sqlite
+*.sqlite3
+*.db
+*.runner.env
+
+# Secret material used by local Runlet deployments
+*.pem
+*.key
+*.p8
+
+# Editor and OS noise
+.DS_Store
+.vscode/
+.idea/
