@@ -6,6 +6,8 @@ license = "MIT"
 description = "Secure ephemeral GitHub Actions runner orchestrator for NixOS and rootless Podman"
 readme = "README.md"
 documentation = "https://docs.rs/runlet"
+homepage = "https://github.com/davidvornholt/runlet"
+repository = "https://github.com/davidvornholt/runlet"
 keywords = ["github-actions", "runner", "nixos", "podman"]
 categories = ["command-line-utilities", "development-tools"]
 
