@@ -7,8 +7,8 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/src/target,sharing=locked \
     mkdir -p /out \
     && cargo build --release --bin runlet-runner-entrypoint \
     && cp target/release/runlet-runner-entrypoint /out/runlet-runner-entrypoint
