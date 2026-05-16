@@ -1,0 +1,20 @@
+name: Runlet smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  smoke:
+    runs-on:
+      - self-hosted
+      - runlet
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show runner context
+        run: |
+          echo "Runlet smoke job"
+          pwd

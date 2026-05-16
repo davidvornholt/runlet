@@ -1,0 +1,24 @@
+use anyhow::Context;
+use runlet::process::run;
+use runlet::runner_entrypoint::RunnerEntrypointConfig;
+use std::env;
+
+fn main() -> anyhow::Result<()> {
+    let config = RunnerEntrypointConfig::from_env().context("runner environment is invalid")?;
+    env::remove_var("RUNNER_TOKEN");
+
+    let configure = config.configure_command();
+    let status = run(configure.command()).context("failed to configure GitHub Actions runner")?;
+    anyhow::ensure!(
+        status.success(),
+        "runner configuration exited with {status}"
+    );
+
+    let runner = config.run_command();
+    let mut runner_command = runner.command();
+    runner_command.env_remove("RUNNER_TOKEN");
+    let status = run(runner_command).context("failed to run GitHub Actions runner")?;
+    anyhow::ensure!(status.success(), "runner exited with {status}");
+
+    Ok(())
+}
