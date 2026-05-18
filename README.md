@@ -15,9 +15,6 @@ The current implementation provides the Runlet appliance foundation:
   Docker socket, creates service state directories, and installs the
   `runlet-orchestrator` systemd service
 
-Runlet is early software. Review the configuration and security model before
-connecting it to repositories that run untrusted pull request code.
-
 ## Quick start
 
 Build or enter a development shell with Nix:
@@ -97,7 +94,9 @@ Follow these steps to move a workflow job from GitHub-hosted runners such as
    ```
 
 4. Replace the GitHub-hosted runner label with the Runlet self-hosted labels.
-   Jobs must include `runlet`; Runlet ignores queued jobs without that label.
+   The `runlet` entry is a GitHub Actions runner label that routes this job to
+   Runlet-managed runners. It is configured in the workflow, not added manually
+   to each pull request.
 
    ```yaml
    jobs:
@@ -272,12 +271,12 @@ but should prefer an egress proxy for HTTP(S) if private network access must be
 mediated. `runtime.network.allowCidrs` can add explicit CIDR exceptions that are
 accepted before the default private-network deny rules.
 
-GitHub should send `workflow_job` webhooks to `/webhook`. Jobs must include the
-`runlet` runner label before Runlet will allocate a runner. Runlet verifies
-`X-Hub-Signature-256`, creates a fresh registration token for each queued job,
-checks pull request changed files for high-risk workflow paths, starts one
-rootless Podman runner container, enforces the repository policy and timeout,
-then removes the container, workspace, and runner registration. On
+GitHub should send `workflow_job` webhooks to `/webhook`. Runlet only allocates
+runners for workflow jobs whose `runs-on` labels include `runlet`.
+Runlet verifies `X-Hub-Signature-256`, creates a fresh registration token for
+each queued job, checks pull request changed files for high-risk workflow paths,
+starts one rootless Podman runner container, enforces the repository policy and
+timeout, then removes the container, workspace, and runner registration. On
 startup, Runlet marks jobs left in allocated pre-cleanup states (`queued`,
 `running`, `succeeded`, or `failed`) as cleanup-pending; active jobs from the
 current daemon are not collected by the periodic cleanup pass.
