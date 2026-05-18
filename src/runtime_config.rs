@@ -1,6 +1,11 @@
 use serde::{Deserialize, Deserializer};
 use std::path::PathBuf;
 
+pub const UNTRUSTED_TMPFS: &[&str] = &[
+    "/tmp:rw,nosuid,nodev,size=1G",
+    "/run:rw,nosuid,nodev,size=64M",
+];
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct RuntimeConfig {
@@ -123,13 +128,9 @@ pub struct RuntimeProfileConfig {
     pub memory: Option<String>,
     pub disk: Option<String>,
     pub timeout: Option<String>,
-    pub read_only: bool,
-    pub tmpfs: Vec<String>,
     pub pids_limit: Option<u32>,
     pub ulimit_nofile: Option<String>,
     pub ulimit_nproc: Option<String>,
-    pub memory_swap: Option<String>,
-    pub ipc: IpcMode,
     pub cpuset_cpus: Option<String>,
     pub device_read_bps: Vec<String>,
     pub device_write_bps: Vec<String>,
@@ -138,7 +139,6 @@ pub struct RuntimeProfileConfig {
     pub selinux_label: Option<String>,
     pub log_driver: Option<String>,
     pub log_size_max: Option<String>,
-    pub disable_host_log_capture: bool,
 }
 
 impl RuntimeProfileConfig {
@@ -149,13 +149,9 @@ impl RuntimeProfileConfig {
             memory: None,
             disk: None,
             timeout: None,
-            read_only: false,
-            tmpfs: Vec::new(),
             pids_limit: Some(2048),
             ulimit_nofile: Some("4096:4096".to_string()),
             ulimit_nproc: Some("2048:2048".to_string()),
-            memory_swap: None,
-            ipc: IpcMode::Private,
             cpuset_cpus: None,
             device_read_bps: Vec::new(),
             device_write_bps: Vec::new(),
@@ -164,7 +160,6 @@ impl RuntimeProfileConfig {
             selinux_label: None,
             log_driver: None,
             log_size_max: None,
-            disable_host_log_capture: false,
         }
     }
 
@@ -175,16 +170,9 @@ impl RuntimeProfileConfig {
             memory: Some("2G".to_string()),
             disk: Some("10G".to_string()),
             timeout: Some("15m".to_string()),
-            read_only: true,
-            tmpfs: vec![
-                "/tmp:rw,nosuid,nodev,size=1G".to_string(),
-                "/run:rw,nosuid,nodev,size=64M".to_string(),
-            ],
             pids_limit: Some(256),
             ulimit_nofile: Some("1024:1024".to_string()),
             ulimit_nproc: Some("512:512".to_string()),
-            memory_swap: Some("memory".to_string()),
-            ipc: IpcMode::Private,
             cpuset_cpus: None,
             device_read_bps: Vec::new(),
             device_write_bps: Vec::new(),
@@ -193,7 +181,6 @@ impl RuntimeProfileConfig {
             selinux_label: None,
             log_driver: Some("k8s-file".to_string()),
             log_size_max: Some("10m".to_string()),
-            disable_host_log_capture: true,
         }
     }
 }
@@ -205,6 +192,7 @@ impl Default for RuntimeProfileConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 struct RuntimeProfileConfigPatch {
     max_concurrent_jobs: Option<u32>,
@@ -212,13 +200,9 @@ struct RuntimeProfileConfigPatch {
     memory: Option<String>,
     disk: Option<String>,
     timeout: Option<String>,
-    read_only: Option<bool>,
-    tmpfs: Option<Vec<String>>,
     pids_limit: Option<u32>,
     ulimit_nofile: Option<String>,
     ulimit_nproc: Option<String>,
-    memory_swap: Option<String>,
-    ipc: Option<IpcMode>,
     cpuset_cpus: Option<String>,
     device_read_bps: Option<Vec<String>>,
     device_write_bps: Option<Vec<String>>,
@@ -227,7 +211,6 @@ struct RuntimeProfileConfigPatch {
     selinux_label: Option<String>,
     log_driver: Option<String>,
     log_size_max: Option<String>,
-    disable_host_log_capture: Option<bool>,
 }
 
 impl RuntimeProfileConfigPatch {
@@ -247,12 +230,6 @@ impl RuntimeProfileConfigPatch {
         if let Some(value) = self.timeout {
             profile.timeout = Some(value);
         }
-        if let Some(value) = self.read_only {
-            profile.read_only = value;
-        }
-        if let Some(value) = self.tmpfs {
-            profile.tmpfs = value;
-        }
         if let Some(value) = self.pids_limit {
             profile.pids_limit = Some(value);
         }
@@ -261,12 +238,6 @@ impl RuntimeProfileConfigPatch {
         }
         if let Some(value) = self.ulimit_nproc {
             profile.ulimit_nproc = Some(value);
-        }
-        if let Some(value) = self.memory_swap {
-            profile.memory_swap = Some(value);
-        }
-        if let Some(value) = self.ipc {
-            profile.ipc = value;
         }
         if let Some(value) = self.cpuset_cpus {
             profile.cpuset_cpus = Some(value);
@@ -292,17 +263,7 @@ impl RuntimeProfileConfigPatch {
         if let Some(value) = self.log_size_max {
             profile.log_size_max = Some(value);
         }
-        if let Some(value) = self.disable_host_log_capture {
-            profile.disable_host_log_capture = value;
-        }
     }
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum IpcMode {
-    Private,
-    Host,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -326,13 +287,12 @@ impl Default for ExecutionUsersConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct NetworkControlsConfig {
     pub enable_untrusted_firewall: bool,
     pub deny_cidrs: Vec<String>,
     pub allow_cidrs: Vec<String>,
-    pub allow_hosts: Vec<String>,
-    pub allow_tcp_ports: Vec<String>,
     pub egress_proxy: Vec<String>,
 }
 
@@ -354,8 +314,6 @@ impl Default for NetworkControlsConfig {
                 "fe80::/10".to_string(),
             ],
             allow_cidrs: Vec::new(),
-            allow_hosts: Vec::new(),
-            allow_tcp_ports: vec!["80".to_string(), "443".to_string()],
             egress_proxy: Vec::new(),
         }
     }

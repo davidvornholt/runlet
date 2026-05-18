@@ -1,6 +1,6 @@
-use crate::cache::{assert_untrusted_cache_write_allowed, prepare_cache_mount};
+use crate::cache::prepare_cache_mount;
 use crate::concurrency::ConcurrencyLimiter;
-use crate::config::Config;
+use crate::config::{Config, TrustClass};
 use crate::duration::parse_duration;
 use crate::github::{GitHubClient, RepositoryId};
 use crate::orchestrator_files::{
@@ -148,12 +148,6 @@ impl Orchestrator {
         let Some(_permit) = self.concurrency.try_acquire(policy.trust_class) else {
             return Err(OrchestratorError::ConcurrencyBusy);
         };
-        assert_untrusted_cache_write_allowed(
-            &self.config.cache,
-            policy.cache_write,
-            request.event != GitHubEventKind::PullRequestFromFork,
-        )?;
-
         let repository = RepositoryId::parse(&request.repository)?;
         let store = Store::open(&self.config.state.database_path)?;
         let job_id = format!("{}-{}", request.github_job_id, Uuid::new_v4());
@@ -333,11 +327,7 @@ impl Orchestrator {
             },
         );
         let timeout = parse_duration(&policy.timeout)?;
-        let capture_stdout = !self
-            .config
-            .runtime
-            .profile(policy.trust_class)
-            .disable_host_log_capture;
+        let capture_stdout = policy.trust_class == TrustClass::Trusted;
         let outcome = match run_with_timeout(process.command(), timeout, capture_stdout) {
             Ok(outcome) => outcome,
             Err(error) => {

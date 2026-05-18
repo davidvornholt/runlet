@@ -51,7 +51,7 @@ pub enum ConfigError {
     EmptyExecutionUser { field: &'static str },
     #[error("runtime.users orchestrator, trusted, and untrusted users must be distinct")]
     NonDistinctExecutionUsers,
-    #[error("strict public pull request networking requires runtime.users.enabled = true")]
+    #[error("public pull request jobs require runtime.users.enabled = true")]
     StrictNetworkRequiresUserSplit,
     #[error("runtime.network.{field} must not be empty")]
     EmptyNetworkValue { field: &'static str },
@@ -68,8 +68,6 @@ pub enum ConfigError {
     InvalidCachePath,
     #[error("repository {name} has an empty trusted branch pattern")]
     EmptyTrustedBranch { name: String },
-    #[error("repository {name} cannot expose secrets to public pull requests")]
-    PublicPullRequestSecrets { name: String },
     #[error("repository {name} workflow risk path pattern must not be empty")]
     EmptyWorkflowRiskPath { name: String },
 }
@@ -150,9 +148,6 @@ impl Config {
             return Err(ConfigError::InvalidCachePath);
         }
         for (name, repository) in &self.repositories {
-            if repository.public_pull_requests.secrets {
-                return Err(ConfigError::PublicPullRequestSecrets { name: name.clone() });
-            }
             if repository
                 .trusted_branches
                 .iter()
@@ -164,10 +159,7 @@ impl Config {
                 &format!("repositories.{name}.public_pull_requests.timeout"),
                 &repository.public_pull_requests.timeout,
             )?;
-            if repository.public_pull_requests.enabled
-                && repository.public_pull_requests.network == NetworkPolicy::Strict
-                && !self.runtime.users.enabled
-            {
+            if repository.public_pull_requests.enabled && !self.runtime.users.enabled {
                 return Err(ConfigError::StrictNetworkRequiresUserSplit);
             }
             if repository
@@ -225,7 +217,6 @@ fn validate_profile(
         ("ulimit_nofile", profile.ulimit_nofile.as_deref()),
         ("ulimit_nproc", profile.ulimit_nproc.as_deref()),
         ("cpuset_cpus", profile.cpuset_cpus.as_deref()),
-        ("memory_swap", profile.memory_swap.as_deref()),
         (
             "seccomp_profile",
             profile
@@ -248,12 +239,6 @@ fn validate_profile(
     }
     if let Some(timeout) = &profile.timeout {
         validate_duration(&format!("runtime.{profile_name}.timeout"), timeout)?;
-    }
-    if profile.tmpfs.iter().any(|value| value.trim().is_empty()) {
-        return Err(ConfigError::EmptyProfileValue {
-            profile: profile_name,
-            field: "tmpfs",
-        });
     }
     if profile
         .device_read_bps
@@ -305,8 +290,6 @@ fn validate_network_controls(network: &NetworkControlsConfig) -> Result<(), Conf
     for (field, values) in [
         ("deny_cidrs", &network.deny_cidrs),
         ("allow_cidrs", &network.allow_cidrs),
-        ("allow_hosts", &network.allow_hosts),
-        ("allow_tcp_ports", &network.allow_tcp_ports),
         ("egress_proxy", &network.egress_proxy),
     ] {
         if values.iter().any(|value| value.trim().is_empty()) {
@@ -355,17 +338,17 @@ impl Default for OrchestratorConfig {
 }
 
 pub use crate::runtime_config::{
-    CleanupConfig, ExecutionUsersConfig, IpcMode, NetworkControlsConfig, RuntimeBackend,
-    RuntimeConfig, RuntimeProfileConfig, StorageIsolationConfig, TrustClass,
+    CleanupConfig, ExecutionUsersConfig, NetworkControlsConfig, RuntimeBackend, RuntimeConfig,
+    RuntimeProfileConfig, StorageIsolationConfig, TrustClass,
 };
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct CacheConfig {
     pub enable: bool,
     pub backend: CacheBackend,
     pub path: PathBuf,
-    pub allow_untrusted_write: bool,
 }
 
 impl Default for CacheConfig {
@@ -374,7 +357,6 @@ impl Default for CacheConfig {
             enable: false,
             backend: CacheBackend::Local,
             path: PathBuf::from("/var/cache/runlet"),
-            allow_untrusted_write: false,
         }
     }
 }

@@ -110,9 +110,8 @@ pub fn decide(config: &Config, context: &JobContext) -> PolicyDecision {
                 secrets: SecretPolicy::False,
                 registry_push: false,
                 deploy: false,
-                network: repository.public_pull_requests.network.clone(),
-                cache_write: repository.public_pull_requests.cache_write
-                    && config.cache.allow_untrusted_write,
+                network: NetworkPolicy::Strict,
+                cache_write: false,
                 privileged: false,
                 timeout: stricter_timeout(
                     config.runtime.untrusted.timeout.as_deref(),
@@ -200,7 +199,6 @@ mod tests {
             },
             cache: CacheConfig {
                 enable: true,
-                allow_untrusted_write: false,
                 ..CacheConfig::default()
             },
             repositories: BTreeMap::from([(
@@ -210,7 +208,6 @@ mod tests {
                     public_pull_requests: PublicPullRequestConfig {
                         enabled: true,
                         timeout: "15m".to_string(),
-                        ..PublicPullRequestConfig::default()
                     },
                     trusted_branches: vec!["main".to_string(), "release/*".to_string()],
                     trusted_jobs: TrustedJobsConfig {

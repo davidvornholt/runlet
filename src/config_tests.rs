@@ -42,13 +42,9 @@ fn parses_plan_shaped_config() {
 
                 [runtime.untrusted]
                 max_concurrent_jobs = 1
-                read_only = true
-                tmpfs = ["/tmp:rw,nosuid,nodev,size=1G", "/run:rw,nosuid,nodev,size=64M"]
                 pids_limit = 256
                 ulimit_nofile = "1024:1024"
                 ulimit_nproc = "512:512"
-                memory_swap = "memory"
-                ipc = "private"
                 log_driver = "k8s-file"
                 log_size_max = "10m"
 
@@ -56,7 +52,6 @@ fn parses_plan_shaped_config() {
                 enable = true
                 backend = "local"
                 path = "/var/cache/runlet"
-                allow_untrusted_write = false
 
                 [repositories."github:org/project"]
                 enabled = true
@@ -64,9 +59,6 @@ fn parses_plan_shaped_config() {
 
                 [repositories."github:org/project".public_pull_requests]
                 enabled = true
-                secrets = false
-                network = "strict"
-                cache_write = false
                 timeout = "15m"
 
                 [repositories."github:org/project".trusted_jobs]
@@ -79,9 +71,7 @@ fn parses_plan_shaped_config() {
     config.validate().expect("config should be valid");
     assert_eq!(config.runtime.backend, RuntimeBackend::PodmanRootless);
     assert!(config.runtime.users.enabled);
-    assert!(config.runtime.untrusted.read_only);
     assert_eq!(config.runtime.untrusted.pids_limit, Some(256));
-    assert!(config.runtime.untrusted.disable_host_log_capture);
     assert!(config.cache.enable);
     assert_eq!(
         config.repositories["github:org/project"].trusted_branches,
@@ -133,34 +123,29 @@ fn rejects_invalid_duration_values() {
 }
 
 #[test]
-fn rejects_public_pull_request_secrets() {
-    let config: Config = toml::from_str(
+fn rejects_removed_untrusted_isolation_options() {
+    let error = toml::from_str::<Config>(
         r#"
-                [github]
-                app_id = 123456
-                installation_id = 987654
-                private_key_file = "/run/secrets/github-app.pem"
+                [runtime.untrusted]
+                read_only = false
+            "#,
+    )
+    .expect_err("removed isolation option should be rejected");
 
-                [orchestrator]
-                listen_addr = "127.0.0.1:8080"
-                webhook_secret_file = "/run/secrets/github-webhook"
+    assert!(error.to_string().contains("unknown field `read_only`"));
+}
 
-                [runtime]
-                runner_image = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0"
-
-                [repositories."github:org/project"]
-                enabled = true
-
+#[test]
+fn rejects_removed_public_pull_request_options() {
+    let error = toml::from_str::<Config>(
+        r#"
                 [repositories."github:org/project".public_pull_requests]
                 secrets = true
             "#,
     )
-    .unwrap();
+    .expect_err("removed public pull request option should be rejected");
 
-    assert!(matches!(
-        config.validate().unwrap_err(),
-        ConfigError::PublicPullRequestSecrets { .. }
-    ));
+    assert!(error.to_string().contains("unknown field `secrets`"));
 }
 
 #[test]
@@ -174,9 +159,7 @@ fn partial_untrusted_profile_overrides_keep_strict_defaults() {
     .expect("partial runtime profile should parse");
 
     assert_eq!(config.runtime.untrusted.max_concurrent_jobs, 2);
-    assert!(config.runtime.untrusted.read_only);
     assert_eq!(config.runtime.untrusted.pids_limit, Some(256));
-    assert!(config.runtime.untrusted.disable_host_log_capture);
 }
 
 #[test]
@@ -189,7 +172,6 @@ fn strict_network_requires_user_split() {
             enabled: true,
             public_pull_requests: PublicPullRequestConfig {
                 enabled: true,
-                network: NetworkPolicy::Strict,
                 ..PublicPullRequestConfig::default()
             },
             ..RepositoryConfig::default()

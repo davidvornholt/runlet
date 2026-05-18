@@ -23,12 +23,10 @@ impl Default for RepositoryConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct PublicPullRequestConfig {
     pub enabled: bool,
-    pub secrets: bool,
-    pub network: NetworkPolicy,
-    pub cache_write: bool,
     pub timeout: String,
 }
 
@@ -36,9 +34,6 @@ impl Default for PublicPullRequestConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            secrets: false,
-            network: NetworkPolicy::Strict,
-            cache_write: false,
             timeout: "15m".to_string(),
         }
     }
@@ -61,10 +56,9 @@ pub struct TrustedJobsConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct WorkflowRiskConfig {
-    pub deny_workflow_file_changes: bool,
-    pub deny_runlet_label_if_workflow_changed: bool,
     pub require_approval_for_workflow_changes: bool,
     pub approval_label: String,
     pub high_risk_paths: Vec<String>,
@@ -74,8 +68,6 @@ pub struct WorkflowRiskConfig {
 impl Default for WorkflowRiskConfig {
     fn default() -> Self {
         Self {
-            deny_workflow_file_changes: true,
-            deny_runlet_label_if_workflow_changed: true,
             require_approval_for_workflow_changes: false,
             approval_label: "runlet-approved-workflow-change".to_string(),
             high_risk_paths: vec![

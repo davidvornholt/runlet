@@ -11,7 +11,7 @@ pub fn workflow_risk_decision(
     config: &WorkflowRiskConfig,
     changed_files: &[String],
     approved: bool,
-    runlet_labeled: bool,
+    _runlet_labeled: bool,
 ) -> WorkflowRiskDecision {
     let matching_file = changed_files
         .iter()
@@ -32,15 +32,9 @@ pub fn workflow_risk_decision(
         };
     }
 
-    if config.deny_workflow_file_changes
-        || (config.deny_runlet_label_if_workflow_changed && runlet_labeled)
-    {
-        return WorkflowRiskDecision::Deny {
-            reason: format!("pull request changes high-risk workflow path {file}"),
-        };
+    WorkflowRiskDecision::Deny {
+        reason: format!("pull request changes high-risk workflow path {file}"),
     }
-
-    WorkflowRiskDecision::Allow
 }
 
 pub fn is_high_risk_path(config: &WorkflowRiskConfig, path: &str) -> bool {
@@ -111,33 +105,7 @@ mod tests {
             WorkflowRiskDecision::Deny { .. }
         ));
 
-        let runlet_label_only = WorkflowRiskConfig {
-            deny_workflow_file_changes: false,
-            deny_runlet_label_if_workflow_changed: true,
-            ..WorkflowRiskConfig::default()
-        };
-        assert_eq!(
-            workflow_risk_decision(
-                &runlet_label_only,
-                &[".github/workflows/ci.yml".to_string()],
-                false,
-                false,
-            ),
-            WorkflowRiskDecision::Allow
-        );
-        assert!(matches!(
-            workflow_risk_decision(
-                &runlet_label_only,
-                &[".github/workflows/ci.yml".to_string()],
-                false,
-                true,
-            ),
-            WorkflowRiskDecision::Deny { .. }
-        ));
-
         let config = WorkflowRiskConfig {
-            deny_workflow_file_changes: false,
-            deny_runlet_label_if_workflow_changed: false,
             require_approval_for_workflow_changes: true,
             ..WorkflowRiskConfig::default()
         };

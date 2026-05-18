@@ -28,7 +28,6 @@
       enable = true;
       backend = "local";
       path = "/var/cache/runlet";
-      allowUntrustedWrite = false;
     };
 
     repositories."github:org/project" = {
@@ -36,9 +35,6 @@
 
       publicPullRequests = {
         enabled = true;
-        secrets = false;
-        network = "strict";
-        cacheWrite = false;
         timeout = "15m";
       };
 

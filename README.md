@@ -180,15 +180,9 @@ capability labels.
 
       # Keep this at 1 for public pull request jobs on shared production hosts.
       untrusted.maxConcurrentJobs = 1;
-      untrusted.readOnly = true;
-      untrusted.tmpfs = [
-        "/tmp:rw,nosuid,nodev,size=1G"
-        "/run:rw,nosuid,nodev,size=64M"
-      ];
       untrusted.pidsLimit = 256;
       untrusted.ulimitNofile = "1024:1024";
       untrusted.ulimitNproc = "512:512";
-      untrusted.memorySwap = "memory";
       untrusted.logDriver = "k8s-file";
       untrusted.logSizeMax = "10m";
 
@@ -201,7 +195,6 @@ capability labels.
       enable = true;
       backend = "local";
       path = "/var/cache/runlet";
-      allowUntrustedWrite = false;
     };
 
     repositories."github:org/project" = {
@@ -209,14 +202,10 @@ capability labels.
 
       publicPullRequests = {
         enabled = true;
-        secrets = false;
-        network = "strict";
-        cacheWrite = false;
         timeout = "15m";
       };
 
       workflowRisk = {
-        denyWorkflowFileChanges = true;
         requireApprovalForWorkflowChanges = false;
         additionalHighRiskPaths = [ "build.rs" "justfile" ];
       };
@@ -262,7 +251,7 @@ runner tokens, and containers are treated as ephemeral data and are expected to
 be removed during cleanup. Runner work directories stay container-local so the
 configured Podman storage limit applies.
 
-Public pull request jobs use the `strict` network policy by default. In the
+Public pull request jobs always use the `strict` network policy. In the
 NixOS module this combines rootless Podman networking without host loopback with
 nftables rules for the untrusted Linux user that deny localhost, private,
 link-local, multicast, carrier-grade NAT, IPv6 ULA/link-local, and
@@ -331,9 +320,9 @@ and the GitHub Actions runner installation.
   systems.
 - Do not expose a Docker socket to runner jobs. The NixOS module enables Podman
   and explicitly leaves the Docker socket disabled.
-- Public pull request jobs should keep `secrets = false`, `cacheWrite = false`,
-  `network = "strict"`, and `runtime.untrusted.maxConcurrentJobs = 1` unless you
-  have reviewed the trust boundary.
+- Public pull request jobs always run without secrets, cache writes, host log
+  capture, or non-strict networking. Keep `runtime.untrusted.maxConcurrentJobs`
+  at 1 unless you have reviewed the trust boundary.
 - `strict` networking depends on host firewall integration. On NixOS the module
   installs nftables rules keyed to the untrusted execution UID; on other systems
   deploy equivalent nftables/iptables rules before accepting public pull

@@ -11,13 +11,9 @@ let
     memory = profile.memory;
     disk = profile.disk;
     timeout = profile.timeout;
-    read_only = profile.readOnly;
-    tmpfs = profile.tmpfs;
     pids_limit = profile.pidsLimit;
     ulimit_nofile = profile.ulimitNofile;
     ulimit_nproc = profile.ulimitNproc;
-    memory_swap = profile.memorySwap;
-    ipc = profile.ipc;
     cpuset_cpus = profile.cpusetCpus;
     device_read_bps = profile.deviceReadBps;
     device_write_bps = profile.deviceWriteBps;
@@ -26,7 +22,6 @@ let
     selinux_label = profile.selinuxLabel;
     log_driver = profile.logDriver;
     log_size_max = profile.logSizeMax;
-    disable_host_log_capture = profile.disableHostLogCapture;
   };
 
   configFile = settingsFormat.generate "runlet-config.toml" {
@@ -62,8 +57,6 @@ let
         enable_untrusted_firewall = cfg.runtime.network.enableUntrustedFirewall;
         deny_cidrs = cfg.runtime.network.denyCidrs;
         allow_cidrs = cfg.runtime.network.allowCidrs;
-        allow_hosts = cfg.runtime.network.allowHosts;
-        allow_tcp_ports = cfg.runtime.network.allowTcpPorts;
         egress_proxy = cfg.runtime.network.egressProxy;
       };
       storage = {
@@ -82,7 +75,6 @@ let
       enable = cfg.cache.enable;
       backend = cfg.cache.backend;
       path = cfg.cache.path;
-      allow_untrusted_write = cfg.cache.allowUntrustedWrite;
     };
     state = {
       database_path = cfg.state.databasePath;
@@ -92,9 +84,6 @@ let
       trusted_branches = repo.trustedBranches;
       public_pull_requests = {
         enabled = repo.publicPullRequests.enabled;
-        secrets = repo.publicPullRequests.secrets;
-        network = repo.publicPullRequests.network;
-        cache_write = repo.publicPullRequests.cacheWrite;
         timeout = repo.publicPullRequests.timeout;
       };
       trusted_jobs = {
@@ -102,8 +91,6 @@ let
         allow_deploy = repo.trustedJobs.allowDeploy;
       };
       workflow_risk = {
-        deny_workflow_file_changes = repo.workflowRisk.denyWorkflowFileChanges;
-        deny_runlet_label_if_workflow_changed = repo.workflowRisk.denyRunletLabelIfWorkflowChanged;
         require_approval_for_workflow_changes = repo.workflowRisk.requireApprovalForWorkflowChanges;
         approval_label = repo.workflowRisk.approvalLabel;
         high_risk_paths = repo.workflowRisk.highRiskPaths;
@@ -121,13 +108,9 @@ let
       memory = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Memory limit override for this trust class. Null uses the Runlet trust-class default."; };
       disk = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Podman storage size override for this trust class. Null uses the Runlet trust-class default."; };
       timeout = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Timeout override for this trust class. Null uses the Runlet trust-class default."; };
-      readOnly = lib.mkOption { type = lib.types.bool; default = false; description = "Run containers with a read-only root filesystem."; };
-      tmpfs = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; description = "Writable tmpfs mounts passed to Podman."; };
       pidsLimit = lib.mkOption { type = lib.types.nullOr lib.types.ints.positive; default = 2048; description = "Podman PID limit. Null uses the Runlet trust-class default."; };
       ulimitNofile = lib.mkOption { type = lib.types.nullOr lib.types.str; default = "4096:4096"; description = "nofile ulimit. Null uses the Runlet trust-class default."; };
       ulimitNproc = lib.mkOption { type = lib.types.nullOr lib.types.str; default = "2048:2048"; description = "nproc ulimit. Null uses the Runlet trust-class default."; };
-      memorySwap = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Podman --memory-swap value. Use memory to disable swap beyond the memory limit. Null uses the Runlet trust-class default."; };
-      ipc = lib.mkOption { type = lib.types.enum [ "private" "host" ]; default = "private"; description = "IPC namespace mode."; };
       cpusetCpus = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Optional cpuset CPU pinning. Null uses the Runlet trust-class default."; };
       deviceReadBps = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; description = "Podman --device-read-bps throttles."; };
       deviceWriteBps = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; description = "Podman --device-write-bps throttles."; };
@@ -136,7 +119,6 @@ let
       selinuxLabel = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Optional SELinux label security option. Null uses the Runlet trust-class default."; };
       logDriver = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Podman log driver. Null uses the Runlet trust-class default; use a Podman-supported value such as none to disable container log files."; };
       logSizeMax = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Podman log max-size option. Null uses the Runlet trust-class default."; };
-      disableHostLogCapture = lib.mkOption { type = lib.types.bool; default = false; description = "Discard runner container stdout and stderr from the orchestrator service."; };
     };
   };
 
@@ -206,15 +188,11 @@ in
           memory = "2G";
           disk = "10G";
           timeout = "15m";
-          readOnly = true;
-          tmpfs = [ "/tmp:rw,nosuid,nodev,size=1G" "/run:rw,nosuid,nodev,size=64M" ];
           pidsLimit = 256;
           ulimitNofile = "1024:1024";
           ulimitNproc = "512:512";
-          memorySwap = "memory";
           logDriver = "k8s-file";
           logSizeMax = "10m";
-          disableHostLogCapture = true;
         };
         description = "Hardened runtime profile for public pull request jobs. Production hosts should keep maxConcurrentJobs at 1 unless extra headroom is dedicated to untrusted CI.";
       };
@@ -230,8 +208,6 @@ in
         enableUntrustedFirewall = lib.mkOption { type = lib.types.bool; default = true; description = "Install nftables rules that block untrusted job egress to host-only, private, link-local, multicast, and metadata-like ranges by UID."; };
         denyCidrs = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ "0.0.0.0/8" "10.0.0.0/8" "100.64.0.0/10" "127.0.0.0/8" "169.254.0.0/16" "172.16.0.0/12" "192.168.0.0/16" "224.0.0.0/4" "::1/128" "fc00::/7" "fe80::/10" ]; description = "CIDR ranges denied for the untrusted execution user."; };
         allowCidrs = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; description = "CIDR ranges explicitly allowed for the untrusted execution user before deny rules are applied."; };
-        allowHosts = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; description = "Documented host allowlist for external firewall/proxy integrations."; };
-        allowTcpPorts = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ "80" "443" ]; description = "Documented TCP ports expected by untrusted jobs."; };
         egressProxy = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; description = "Optional egress proxy URLs exposed to strict-network jobs through RUNLET_EGRESS_PROXY."; };
       };
 
@@ -253,7 +229,6 @@ in
       enable = lib.mkEnableOption "Runlet local build cache";
       backend = lib.mkOption { type = lib.types.enum [ "local" ]; default = "local"; description = "Cache backend."; };
       path = lib.mkOption { type = lib.types.path; default = "/var/cache/runlet"; description = "Local cache path. Mount on quota-limited storage for production hosts."; };
-      allowUntrustedWrite = lib.mkOption { type = lib.types.bool; default = false; description = "Allow untrusted public pull requests to write to the cache."; };
     };
 
     state.databasePath = lib.mkOption { type = lib.types.path; default = "/var/lib/runlet/runlet.sqlite3"; description = "SQLite database path for orchestration metadata."; };
@@ -264,9 +239,6 @@ in
           enabled = lib.mkEnableOption "this repository";
           publicPullRequests = {
             enabled = lib.mkEnableOption "public pull request jobs";
-            secrets = lib.mkOption { type = lib.types.bool; default = false; description = "Expose secrets to public pull request jobs. Runlet rejects true for secure defaults."; };
-            network = lib.mkOption { type = lib.types.enum [ "strict" "restricted" "normal" "offline" ]; default = "strict"; description = "Network policy for public pull request jobs. Strict combines rootless Podman host-loopback denial with the untrusted UID nftables egress firewall."; };
-            cacheWrite = lib.mkOption { type = lib.types.bool; default = false; description = "Allow public pull request jobs to write cache entries."; };
             timeout = lib.mkOption { type = lib.types.str; default = "15m"; description = "Timeout for public pull request jobs."; };
           };
           trustedBranches = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ "main" ]; description = "Branch names or prefix patterns like release/* that may use trusted policy."; };
@@ -275,8 +247,6 @@ in
             allowDeploy = lib.mkOption { type = lib.types.bool; default = false; description = "Allow trusted jobs to run deployment steps."; };
           };
           workflowRisk = {
-            denyWorkflowFileChanges = lib.mkOption { type = lib.types.bool; default = true; description = "Deny public pull request jobs that modify high-risk workflow paths."; };
-            denyRunletLabelIfWorkflowChanged = lib.mkOption { type = lib.types.bool; default = true; description = "Deny Runlet-labeled public pull request jobs when high-risk workflow files changed."; };
             requireApprovalForWorkflowChanges = lib.mkOption { type = lib.types.bool; default = false; description = "Hold public pull request jobs that modify high-risk workflow paths unless the configured approval label is present. After applying the label, rerun the workflow job or redeliver the workflow_job webhook."; };
             approvalLabel = lib.mkOption { type = lib.types.str; default = "runlet-approved-workflow-change"; description = "Pull request label that approves high-risk workflow changes when approval is required."; };
             highRiskPaths = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ".github/workflows/**" ".github/actions/**" "**/action.yml" "**/action.yaml" "scripts/**" ]; description = "Path patterns treated as high risk for public pull request jobs."; };
@@ -291,7 +261,6 @@ in
 
   config = lib.mkIf cfg.enable {
     assertions = [
-      { assertion = !(cfg.cache.allowUntrustedWrite && !cfg.cache.enable); message = "services.runlet.cache.allowUntrustedWrite requires services.runlet.cache.enable."; }
       { assertion = !(cfg.runtime.network.enableUntrustedFirewall && !cfg.runtime.users.enable); message = "services.runlet.runtime.network.enableUntrustedFirewall requires services.runlet.runtime.users.enable."; }
       { assertion = !cfg.runtime.users.enable || (cfg.runtime.users.orchestrator != cfg.runtime.users.trusted && cfg.runtime.users.orchestrator != cfg.runtime.users.untrusted && cfg.runtime.users.trusted != cfg.runtime.users.untrusted); message = "services.runlet.runtime.users orchestrator, trusted, and untrusted users must be distinct when user splitting is enabled."; }
     ];

@@ -1,5 +1,6 @@
-use crate::config::{IpcMode, NetworkPolicy, RuntimeConfig, RuntimeProfileConfig, TrustClass};
+use crate::config::{NetworkPolicy, RuntimeConfig, RuntimeProfileConfig, TrustClass};
 use crate::process::ProcessSpec;
+use crate::runtime_config::UNTRUSTED_TMPFS;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
@@ -64,9 +65,14 @@ pub fn podman_run(runtime: &RuntimeConfig, job: &PodmanJobSpec) -> ProcessSpec {
         job.token_env_file.clone(),
     ];
 
-    append_profile_args(&mut podman_args, profile, &memory);
+    append_profile_args(&mut podman_args, profile);
 
-    if profile.read_only {
+    if job.trust_class == TrustClass::Untrusted {
+        podman_args.push("--read-only".into());
+        for tmpfs in UNTRUSTED_TMPFS {
+            podman_args.extend(["--tmpfs".into(), (*tmpfs).into()]);
+        }
+        podman_args.extend(["--memory-swap".into(), memory.clone().into()]);
         podman_args.extend(["--env".into(), "HOME=/tmp/runlet-home".into()]);
     }
 
@@ -127,13 +133,7 @@ pub fn podman_run(runtime: &RuntimeConfig, job: &PodmanJobSpec) -> ProcessSpec {
     }
 }
 
-fn append_profile_args(args: &mut Vec<OsString>, profile: &RuntimeProfileConfig, memory: &str) {
-    if profile.read_only {
-        args.push("--read-only".into());
-    }
-    for tmpfs in &profile.tmpfs {
-        args.extend(["--tmpfs".into(), tmpfs.clone().into()]);
-    }
+fn append_profile_args(args: &mut Vec<OsString>, profile: &RuntimeProfileConfig) {
     if let Some(limit) = profile.pids_limit {
         args.extend(["--pids-limit".into(), limit.to_string().into()]);
     }
@@ -143,18 +143,7 @@ fn append_profile_args(args: &mut Vec<OsString>, profile: &RuntimeProfileConfig,
     if let Some(limit) = &profile.ulimit_nproc {
         args.extend(["--ulimit".into(), format!("nproc={limit}").into()]);
     }
-    if let Some(swap) = &profile.memory_swap {
-        let swap_value = if swap == "memory" {
-            memory
-        } else {
-            swap.as_str()
-        };
-        args.extend(["--memory-swap".into(), swap_value.into()]);
-    }
-    match profile.ipc {
-        IpcMode::Private => args.extend(["--ipc".into(), "private".into()]),
-        IpcMode::Host => args.extend(["--ipc".into(), "host".into()]),
-    }
+    args.extend(["--ipc".into(), "private".into()]);
     if let Some(cpus) = &profile.cpuset_cpus {
         args.extend(["--cpuset-cpus".into(), cpus.clone().into()]);
     }

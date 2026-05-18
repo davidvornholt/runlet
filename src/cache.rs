@@ -7,8 +7,6 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum CacheError {
-    #[error("cache writes are not allowed for untrusted jobs")]
-    UntrustedWriteDenied,
     #[error("failed to create cache namespace {path}: {source}")]
     CreateNamespace {
         path: PathBuf,
@@ -65,18 +63,6 @@ pub fn prepare_cache_mount(
     }))
 }
 
-pub fn assert_untrusted_cache_write_allowed(
-    config: &CacheConfig,
-    cache_write: bool,
-    trusted: bool,
-) -> Result<(), CacheError> {
-    if cache_write && !trusted && !config.allow_untrusted_write {
-        Err(CacheError::UntrustedWriteDenied)
-    } else {
-        Ok(())
-    }
-}
-
 pub fn path_is_inside_cache_root(root: &Path, path: &Path) -> bool {
     path.starts_with(root)
 }
@@ -102,7 +88,6 @@ mod tests {
             enable: true,
             backend: CacheBackend::Local,
             path: directory.path().to_path_buf(),
-            allow_untrusted_write: false,
         };
 
         let mount = prepare_cache_mount(&config, "github:org/project", false)
@@ -111,19 +96,5 @@ mod tests {
 
         let mode = fs::metadata(mount.path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o770);
-    }
-
-    #[test]
-    fn rejects_untrusted_cache_writes_by_default() {
-        let config = CacheConfig {
-            enable: true,
-            backend: CacheBackend::Local,
-            path: "/tmp/runlet-cache".into(),
-            allow_untrusted_write: false,
-        };
-        assert!(matches!(
-            assert_untrusted_cache_write_allowed(&config, true, false),
-            Err(CacheError::UntrustedWriteDenied)
-        ));
     }
 }
