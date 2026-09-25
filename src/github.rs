@@ -343,6 +343,56 @@ fn parse_response<T: for<'de> Deserialize<'de>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("../tests/fixtures/github_app_keys.rs");
+
+    #[test]
+    fn signs_app_jwt_with_rsa_and_expected_claims() {
+        let directory = tempfile::tempdir().unwrap();
+        let key_path = directory.path().join("app.pem");
+        fs::write(&key_path, PRIVATE_KEY).unwrap();
+        let client = GitHubClient::new(GitHubConfig {
+            app_id: 12345,
+            private_key_file: key_path,
+            ..GitHubConfig::default()
+        });
+        let token = client.app_jwt().unwrap();
+        let key = jsonwebtoken::DecodingKey::from_rsa_pem(PUBLIC_KEY).unwrap();
+        let mut validation = jsonwebtoken::Validation::new(Algorithm::RS256);
+        validation.set_issuer(&["12345"]);
+        let decoded = jsonwebtoken::decode::<serde_json::Value>(&token, &key, &validation).unwrap();
+        assert_eq!(decoded.header.alg, Algorithm::RS256);
+        assert_eq!(decoded.claims["iss"], "12345");
+        assert_eq!(
+            decoded.claims["exp"].as_i64().unwrap() - decoded.claims["iat"].as_i64().unwrap(),
+            600
+        );
+        let mut tampered = token.into_bytes();
+        let signature_start = tampered.iter().rposition(|byte| *byte == b'.').unwrap() + 1;
+        tampered[signature_start] = if tampered[signature_start] == b'A' {
+            b'B'
+        } else {
+            b'A'
+        };
+        assert!(jsonwebtoken::decode::<serde_json::Value>(
+            &String::from_utf8(tampered).unwrap(),
+            &key,
+            &validation
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn reports_unreadable_or_invalid_app_keys() {
+        let directory = tempfile::tempdir().unwrap();
+        let key_path = directory.path().join("app.pem");
+        let client = GitHubClient::new(GitHubConfig {
+            private_key_file: key_path.clone(),
+            ..GitHubConfig::default()
+        });
+        assert!(matches!(client.app_jwt(), Err(GitHubError::ReadKey(_))));
+        fs::write(key_path, b"not an RSA key").unwrap();
+        assert!(matches!(client.app_jwt(), Err(GitHubError::ParseKey(_))));
+    }
 
     #[test]
     fn parses_repository_id() {

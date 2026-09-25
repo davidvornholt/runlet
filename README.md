@@ -303,7 +303,7 @@ so the recipe can compile `runlet-runner-entrypoint`:
 ```bash
 podman build \
   --file images/actions-runner/Containerfile \
-  --build-arg RUNNER_VERSION=2.334.0 \
+  --build-arg RUNNER_VERSION=2.337.0 \
   --tag ghcr.io/org/runlet-actions-runner:custom \
   .
 podman push ghcr.io/org/runlet-actions-runner:custom
