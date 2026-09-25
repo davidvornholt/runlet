@@ -343,26 +343,20 @@ fn parse_response<T: for<'de> Deserialize<'de>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("../tests/fixtures/github_app_keys.rs");
 
     #[test]
     fn signs_app_jwt_with_rsa_and_expected_claims() {
         let directory = tempfile::tempdir().unwrap();
         let key_path = directory.path().join("app.pem");
-        fs::write(
-            &key_path,
-            include_bytes!("../tests/fixtures/github-app-test.pem"),
-        )
-        .unwrap();
+        fs::write(&key_path, PRIVATE_KEY).unwrap();
         let client = GitHubClient::new(GitHubConfig {
             app_id: 12345,
             private_key_file: key_path,
             ..GitHubConfig::default()
         });
         let token = client.app_jwt().unwrap();
-        let key = jsonwebtoken::DecodingKey::from_rsa_pem(include_bytes!(
-            "../tests/fixtures/github-app-test.pub.pem"
-        ))
-        .unwrap();
+        let key = jsonwebtoken::DecodingKey::from_rsa_pem(PUBLIC_KEY).unwrap();
         let mut validation = jsonwebtoken::Validation::new(Algorithm::RS256);
         validation.set_issuer(&["12345"]);
         let decoded = jsonwebtoken::decode::<serde_json::Value>(&token, &key, &validation).unwrap();

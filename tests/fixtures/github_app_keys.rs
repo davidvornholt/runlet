@@ -1,4 +1,5 @@
------BEGIN PRIVATE KEY-----
+// Offline test-only RSA key pair; never used as real credentials.
+pub const PRIVATE_KEY: &[u8] = br#"-----BEGIN PRIVATE KEY-----
 MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCajYAZH95pjGZR
 C+kYODjtXvtbC4JX3uy1aMhxYOtwSj3arASlaegDe1YhyYUmXu0Cqr7fCCF/+ekg
 G+XzPqvFE9CmQWpOLivAyFot62DqZGuD9IXnF432JU1BSj5JiUwq+nAOTMTokJFJ
@@ -26,3 +27,14 @@ Kv5+eKu2h1Asm2hwwpfTKLJ5mZ2YH5AXCmrgduECgYAhoFBfAZJbl8yBx738Hrqp
 1OQoE76eD9TQCGEup6dF5C6PXLoAPDFtsObfq2ZQgbOMO4OVjj9UjEOKqQa1Nn7/
 k+Td8vCLgN1nIHHMRqug+w==
 -----END PRIVATE KEY-----
+"#;
+pub const PUBLIC_KEY: &[u8] = br#"-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmo2AGR/eaYxmUQvpGDg4
+7V77WwuCV97stWjIcWDrcEo92qwEpWnoA3tWIcmFJl7tAqq+3wghf/npIBvl8z6r
+xRPQpkFqTi4rwMhaLetg6mRrg/SF5xeN9iVNQUo+SYlMKvpwDkzE6JCRSYFifCg/
+dtwZWDqnRaa0bvsQSYPxNBwSMXLsuPQRVYNuP4ywCBzaixklo8feHZ2v0WI9rjJm
+G54NDhprPnasxkp7sjfTLEqvtEGce4BFj7qXotCWN+Khmok2v3m7/zHdixc9IHF7
+GyO2hrcBess9iDIswYpvoGjRblgSpASI2aQNx64MAU/P+XDmR2js1pc75cZuwpD2
+FwIDAQAB
+-----END PUBLIC KEY-----
+"#;
