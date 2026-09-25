@@ -16,6 +16,10 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
+          SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+          # The sandbox's /homeless-shelter is intentionally unwritable. Tests
+          # exercise runner copies in their temporary directories, not a user home.
+          preCheck = "unset HOME";
         };
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
         runlet = craneLib.buildPackage (commonArgs // {
