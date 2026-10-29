@@ -2,7 +2,7 @@ use crate::config::CacheConfig;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -61,10 +61,6 @@ pub fn prepare_cache_mount(
         path,
         writable: cache_write,
     }))
-}
-
-pub fn path_is_inside_cache_root(root: &Path, path: &Path) -> bool {
-    path.starts_with(root)
 }
 
 #[cfg(test)]
