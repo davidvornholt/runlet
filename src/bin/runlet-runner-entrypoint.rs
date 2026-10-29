@@ -7,6 +7,7 @@ use anyhow::Context;
 use process::run;
 use runner_entrypoint::RunnerEntrypointConfig;
 use std::env;
+use std::os::unix::process::CommandExt;
 
 fn main() -> anyhow::Result<()> {
     let mut config = RunnerEntrypointConfig::from_env().context("runner environment is invalid")?;
@@ -25,8 +26,9 @@ fn main() -> anyhow::Result<()> {
     let runner = config.run_command();
     let mut runner_command = runner.command();
     runner_command.env_remove("RUNNER_TOKEN");
-    let status = run(runner_command).context("failed to run GitHub Actions runner")?;
-    anyhow::ensure!(status.success(), "runner exited with {status}");
-
-    Ok(())
+    // Replace this process instead of waiting on a child. As the container's PID 1,
+    // a waiting entrypoint keeps its initial environment, including RUNNER_TOKEN,
+    // readable through /proc/1/environ for every job step.
+    let error = runner_command.exec();
+    Err(error).context("failed to run GitHub Actions runner")
 }
