@@ -2,7 +2,8 @@ use crate::config::GitHubConfig;
 use chrono::Utc;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::blocking::Client as HttpClient;
-use reqwest::StatusCode;
+use reqwest::{StatusCode, Url};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use thiserror::Error;
@@ -11,6 +12,8 @@ use thiserror::Error;
 pub enum GitHubError {
     #[error("repository id must look like github:owner/repo, got {0}")]
     InvalidRepository(String),
+    #[error("GitHub API base URL {0} is invalid")]
+    InvalidApiBaseUrl(String),
     #[error("failed to read GitHub App key: {0}")]
     ReadKey(std::io::Error),
     #[error("failed to parse GitHub App key: {0}")]
@@ -235,6 +238,50 @@ impl GitHubClient {
         Ok(pull_request.labels.iter().any(|item| item.name == label))
     }
 
+    pub(crate) fn api_url<'a>(
+        &self,
+        segments: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Url, GitHubError> {
+        let invalid = || GitHubError::InvalidApiBaseUrl(self.config.api_base_url.clone());
+        let mut url = Url::parse(&self.config.api_base_url).map_err(|_| invalid())?;
+        url.path_segments_mut()
+            .map_err(|()| invalid())?
+            .pop_if_empty()
+            .extend(segments);
+        Ok(url)
+    }
+
+    pub(crate) fn get_json<T: DeserializeOwned>(
+        &self,
+        token: &str,
+        url: Url,
+    ) -> Result<T, GitHubError> {
+        parse_response(self.send_get(token, url)?)
+    }
+
+    pub(crate) fn get_json_if_found<T: DeserializeOwned>(
+        &self,
+        token: &str,
+        url: Url,
+    ) -> Result<Option<T>, GitHubError> {
+        let response = self.send_get(token, url)?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        parse_response(response).map(Some)
+    }
+
+    fn send_get(&self, token: &str, url: Url) -> Result<reqwest::blocking::Response, GitHubError> {
+        self.http
+            .get(url)
+            .bearer_auth(token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "runlet")
+            .send()
+            .map_err(GitHubError::Request)
+    }
+
     pub fn remove_runner_by_name(
         &self,
         repository: &RepositoryId,
@@ -388,6 +435,21 @@ mod tests {
         assert!(matches!(client.app_jwt(), Err(GitHubError::ReadKey(_))));
         fs::write(key_path, b"not an RSA key").unwrap();
         assert!(matches!(client.app_jwt(), Err(GitHubError::ParseKey(_))));
+    }
+
+    #[test]
+    fn api_url_encodes_each_segment_under_the_base_path() {
+        let client = GitHubClient::new(GitHubConfig {
+            api_base_url: "https://github.example.com/api/v3/".to_string(),
+            ..GitHubConfig::default()
+        });
+        let url = client
+            .api_url(["repos", "org", "project", "git", "ref", "tags", "v1#2%"])
+            .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://github.example.com/api/v3/repos/org/project/git/ref/tags/v1%232%25"
+        );
     }
 
     #[test]

@@ -5,7 +5,8 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitHubEventKind {
-    PullRequestFromFork,
+    /// Pull request jobs and every job whose workflow run Runlet could not verify as a push.
+    Untrusted,
     BranchPush,
     Release,
 }
@@ -98,10 +99,11 @@ pub fn decide(config: &Config, context: &JobContext) -> PolicyDecision {
     }
 
     match context.event {
-        GitHubEventKind::PullRequestFromFork => {
+        GitHubEventKind::Untrusted => {
             if !repository.public_pull_requests.enabled {
                 return PolicyDecision::Deny {
-                    reason: "public pull requests are disabled".to_string(),
+                    reason: "untrusted jobs are denied because public pull requests are disabled"
+                        .to_string(),
                 };
             }
 
@@ -173,7 +175,7 @@ fn stricter_timeout(runtime_timeout: Option<&str>, policy_timeout: &str) -> Stri
     }
 }
 
-fn is_trusted_branch(patterns: &[String], branch: &str) -> bool {
+pub(crate) fn is_trusted_branch(patterns: &[String], branch: &str) -> bool {
     patterns.iter().any(|pattern| {
         if let Some(prefix) = pattern.strip_suffix("/*") {
             branch.starts_with(prefix) && branch[prefix.len()..].starts_with('/')
@@ -228,7 +230,7 @@ mod tests {
             &config,
             &JobContext {
                 repository: "github:org/project".to_string(),
-                event: GitHubEventKind::PullRequestFromFork,
+                event: GitHubEventKind::Untrusted,
                 branch: "feature".to_string(),
             },
         );
@@ -253,7 +255,7 @@ mod tests {
             &config,
             &JobContext {
                 repository: "github:org/project".to_string(),
-                event: GitHubEventKind::PullRequestFromFork,
+                event: GitHubEventKind::Untrusted,
                 branch: "feature".to_string(),
             },
         );
@@ -268,7 +270,7 @@ mod tests {
             &config,
             &JobContext {
                 repository: "github:org/project".to_string(),
-                event: GitHubEventKind::PullRequestFromFork,
+                event: GitHubEventKind::Untrusted,
                 branch: "feature".to_string(),
             },
         ) else {

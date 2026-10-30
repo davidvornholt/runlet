@@ -13,10 +13,10 @@ const MAX_WEBHOOK_HEADER_BYTES: usize = 16 * 1024;
 const MAX_WEBHOOK_BODY_BYTES: usize = 1024 * 1024;
 const MAX_WEBHOOK_CONNECTIONS: usize = 128;
 
-pub fn serve_webhooks(
+pub fn serve_webhooks<J: From<JobRequest> + Send + 'static>(
     listen_addr: &str,
     webhook_secret: Vec<u8>,
-    sender: Sender<JobRequest>,
+    sender: Sender<J>,
 ) -> Result<(), std::io::Error> {
     let listener = TcpListener::bind(listen_addr)?;
     tracing::info!(%listen_addr, "runlet webhook listener started");
@@ -45,10 +45,10 @@ pub fn serve_webhooks(
     Ok(())
 }
 
-fn handle_connection(
+fn handle_connection<J: From<JobRequest>>(
     mut stream: TcpStream,
     webhook_secret: &[u8],
-    sender: &Sender<JobRequest>,
+    sender: &Sender<J>,
 ) -> Result<(), std::io::Error> {
     let request = HttpRequest::read(&mut stream)?;
     let response = handle_webhook_request(webhook_secret, sender, request);
@@ -56,9 +56,9 @@ fn handle_connection(
     Ok(())
 }
 
-fn handle_webhook_request(
+fn handle_webhook_request<J: From<JobRequest>>(
     webhook_secret: &[u8],
-    sender: &Sender<JobRequest>,
+    sender: &Sender<J>,
     request: HttpRequest,
 ) -> HttpResponse {
     if request.method != "POST" || request.path != "/webhook" {
@@ -75,7 +75,7 @@ fn handle_webhook_request(
         return HttpResponse::new(400, "missing event");
     };
     match parse_event(event, &request.body) {
-        Ok(Some(job)) => match sender.send(job) {
+        Ok(Some(job)) => match sender.send(J::from(job)) {
             Ok(()) => HttpResponse::new(202, "queued"),
             Err(_) => HttpResponse::new(503, "job queue unavailable"),
         },
@@ -251,16 +251,16 @@ mod tests {
             "action": "queued",
             "workflow_job": {
                 "id": 42,
+                "run_id": 7001,
                 "head_branch": "main",
-                "labels": ["self-hosted"],
-                "pull_requests": []
+                "labels": ["self-hosted"]
             },
             "repository": {
                 "full_name": "org/project",
                 "html_url": "https://github.com/org/project"
             }
         }"#;
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel::<JobRequest>();
         let response = handle_webhook_request(b"secret", &sender, signed_request(body));
 
         assert_eq!(response.status, 202);
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn rejects_bad_signature() {
-        let (sender, _receiver) = mpsc::channel();
+        let (sender, _receiver) = mpsc::channel::<JobRequest>();
         let request = HttpRequest {
             method: "POST".to_string(),
             path: "/webhook".to_string(),

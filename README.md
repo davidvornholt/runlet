@@ -61,10 +61,16 @@ Follow these steps to move a workflow job from GitHub-hosted runners such as
 
    - Create a GitHub App, install it on the repository, subscribe it to the
      `workflow_job` webhook event, and point the webhook at
-     `https://<runlet-host>/webhook`. The app needs read/write access to
-     repository self-hosted runners for registration token creation and runner
-     removal, and read access to pull requests so Runlet can inspect changed
-     files and approval labels before running public pull request jobs.
+     `https://<runlet-host>/webhook`. The app needs these repository
+     permissions:
+     - Administration: read and write, to create runner registration tokens
+       and remove runners.
+     - Actions: read, so Runlet can read the workflow run behind each job and
+       verify what triggered it.
+     - Contents: read, so Runlet can confirm that a release job comes from a
+       tag that points at the run's commit.
+     - Pull requests: read, so Runlet can find the pull request behind a pull
+       request run and inspect its changed files and approval labels.
    - Store the app private key and webhook secret outside git and outside the Nix
      store, then reference those files from the Runlet configuration.
    - Add the repository to Runlet configuration with the exact id
@@ -131,15 +137,22 @@ Follow these steps to move a workflow job from GitHub-hosted runners such as
 
 6. Commit the workflow change and trigger the workflow with a push, pull request,
    or `workflow_dispatch` event. In GitHub, the job should queue for a
-   self-hosted runner. Runlet receives the `workflow_job` event, creates a fresh
-   registration token, starts one runner container for the job, and removes the
-   runner when the job finishes.
+   self-hosted runner. Runlet receives the `workflow_job` event, verifies the
+   job's trust class from its workflow run, creates a fresh registration token,
+   starts one runner container for the job, and removes the runner when the job
+   finishes. See [Job trust classes](#job-trust-classes) for which events run as
+   trusted jobs.
 
 7. If the job stays queued, check these common causes:
    - The job is missing the `runlet` label.
    - The GitHub App is not installed on the repository that owns the workflow.
    - The webhook is not subscribed to `workflow_job`, cannot reach
      `/webhook`, or uses the wrong secret.
+   - The GitHub App lacks the Actions, Contents, or Pull requests read
+     permission, so Runlet cannot verify the job and refuses to run it. The
+     orchestrator log names the failed lookup.
+   - The job is untrusted (for example a pull request or `workflow_dispatch`
+     run) and `public_pull_requests.enabled` is off for the repository.
    - The repository id in Runlet configuration does not match
      `github:<owner>/<repo>`.
    - A requested capability label is not allowed by the repository policy.
@@ -147,6 +160,29 @@ Follow these steps to move a workflow job from GitHub-hosted runners such as
 To roll a job back to the default GitHub-hosted runner, change `runs-on` back to
 `ubuntu-latest` or another GitHub-hosted runner label and remove the Runlet
 capability labels.
+
+## Job trust classes
+
+The `workflow_job` webhook does not say what triggered a job, so Runlet reads
+the job's workflow run with the GitHub App and decides the trust class from it:
+
+- A `push` run from the repository itself on a branch in `trusted_branches`
+  is a trusted branch push.
+- A `push` run from the repository itself whose name doesn't match
+  `trusted_branches` and is a tag that exists and points at the run's commit
+  is a trusted release.
+- A `push` run on any other branch is denied.
+- Every other run is untrusted: `pull_request`, `pull_request_target`,
+  `workflow_dispatch`, scheduled and other events, runs from another
+  repository, and runs Runlet cannot look up. Untrusted jobs run with the
+  public pull request policy and are denied when
+  `public_pull_requests.enabled` is off.
+
+Before an untrusted pull request job runs, Runlet finds the open pull request
+whose head matches the run's commit and checks its changed files against the
+workflow-risk paths. If Runlet cannot verify the run or cannot match a pull
+request run to an open pull request, it denies the job instead of skipping that
+check. Redeliver the `workflow_job` webhook to retry after fixing the cause.
 
 ## NixOS module
 
@@ -262,8 +298,9 @@ accepted before the default private-network deny rules.
 
 GitHub should send `workflow_job` webhooks to `/webhook`. Runlet only allocates
 runners for workflow jobs whose `runs-on` labels include `runlet`.
-Runlet verifies `X-Hub-Signature-256`, creates a fresh registration token for
-each queued job, checks pull request changed files for high-risk workflow paths,
+Runlet verifies `X-Hub-Signature-256`, verifies each queued job's trust class
+from its workflow run, creates a fresh registration token for each queued job,
+checks pull request changed files for high-risk workflow paths,
 starts one rootless Podman runner container, enforces the repository policy and
 timeout, then removes the container, workspace, and runner registration. On
 startup, Runlet marks jobs left in allocated pre-cleanup states (`queued`,
