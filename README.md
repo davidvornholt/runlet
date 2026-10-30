@@ -168,8 +168,9 @@ the job's workflow run with the GitHub App and decides the trust class from it:
 
 - A `push` run from the repository itself on a branch in `trusted_branches`
   is a trusted branch push.
-- A `push` run from the repository itself whose name is a tag that exists and
-  points at the run's commit is a trusted release.
+- A `push` run from the repository itself whose name doesn't match
+  `trusted_branches` and is a tag that exists and points at the run's commit
+  is a trusted release.
 - A `push` run on any other branch is denied.
 - Every other run is untrusted: `pull_request`, `pull_request_target`,
   `workflow_dispatch`, scheduled and other events, runs from another
