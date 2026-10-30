@@ -47,10 +47,6 @@ impl RepositoryId {
             name: name.to_string(),
         })
     }
-
-    pub fn repo_url(&self) -> String {
-        format!("https://github.com/{}/{}", self.owner, self.name)
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -399,7 +395,6 @@ mod tests {
         let repository = RepositoryId::parse("github:openai/runlet").unwrap();
         assert_eq!(repository.owner, "openai");
         assert_eq!(repository.name, "runlet");
-        assert_eq!(repository.repo_url(), "https://github.com/openai/runlet");
     }
 
     #[test]

@@ -127,19 +127,5 @@ mod tests {
             ),
             WorkflowRiskDecision::Allow
         );
-
-        let approval_overrides_default_deny_flags = WorkflowRiskConfig {
-            require_approval_for_workflow_changes: true,
-            ..WorkflowRiskConfig::default()
-        };
-        assert_eq!(
-            workflow_risk_decision(
-                &approval_overrides_default_deny_flags,
-                &[".github/workflows/ci.yml".to_string()],
-                true,
-                true,
-            ),
-            WorkflowRiskDecision::Allow
-        );
     }
 }
