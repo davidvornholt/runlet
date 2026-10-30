@@ -63,8 +63,8 @@ Follow these steps to move a workflow job from GitHub-hosted runners such as
      `workflow_job` webhook event, and point the webhook at
      `https://<runlet-host>/webhook`. The app needs these repository
      permissions:
-     - Read and write access to repository self-hosted runners, to create
-       registration tokens and remove runners.
+     - Administration: read and write, to create runner registration tokens
+       and remove runners.
      - Actions: read, so Runlet can read the workflow run behind each job and
        verify what triggered it.
      - Contents: read, so Runlet can confirm that a release job comes from a
