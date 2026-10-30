@@ -153,8 +153,6 @@ impl Orchestrator {
         }
     }
 
-    /// Checks the runlet label before any GitHub lookup, then classifies the
-    /// job from its workflow run.
     fn verify_trust(&self, request: &JobRequest) -> Result<JobTrust, OrchestratorError> {
         if !is_runlet_labeled(&request.labels) {
             return Err(OrchestratorError::PolicyDenied(

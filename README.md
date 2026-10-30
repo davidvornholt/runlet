@@ -259,13 +259,6 @@ check. Redeliver the `workflow_job` webhook to retry after fixing the cause.
 
 ## Migration notes
 
-Runlet now verifies each job's trust class from its workflow run. Before
-upgrading, grant the GitHub App the Actions: read and Contents: read repository
-permissions and accept the updated permissions on each installation; until
-then Runlet cannot verify jobs and denies them. `workflow_dispatch` runs, which
-previously ran with trusted policy on a trusted branch, now run as untrusted
-jobs.
-
 Existing single-user deployments should review the new NixOS defaults before
 switching production traffic. The module now creates `runlet-orchestrator`,
 `runlet-trusted`, and `runlet-untrusted`, writes separate Podman storage
