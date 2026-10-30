@@ -201,7 +201,7 @@ in
         enable = lib.mkOption { type = lib.types.bool; default = true; description = "Run Podman as separate Linux users for trusted and untrusted jobs."; };
         orchestrator = lib.mkOption { type = lib.types.str; default = "runlet-orchestrator"; description = "Dedicated orchestrator user that owns coordination state."; };
         trusted = lib.mkOption { type = lib.types.str; default = "runlet-trusted"; description = "Linux user used for trusted job containers."; };
-        untrusted = lib.mkOption { type = lib.types.str; default = "runlet-untrusted"; description = "Linux user used for untrusted public pull request containers."; };
+        untrusted = lib.mkOption { type = lib.types.str; default = "runlet-untrusted"; description = "Linux user used for untrusted job containers, such as public pull request and workflow_dispatch jobs."; };
       };
 
       network = {
@@ -239,7 +239,7 @@ in
           enabled = lib.mkEnableOption "this repository";
           publicPullRequests = {
             enabled = lib.mkEnableOption "public pull request jobs and other untrusted jobs, such as workflow_dispatch runs";
-            timeout = lib.mkOption { type = lib.types.str; default = "15m"; description = "Timeout for public pull request jobs."; };
+            timeout = lib.mkOption { type = lib.types.str; default = "15m"; description = "Timeout for public pull request jobs and other untrusted jobs, such as workflow_dispatch runs."; };
           };
           trustedBranches = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ "main" ]; description = "Branch names or prefix patterns like release/* whose push runs from the repository itself use trusted policy. Other events on these branches, such as workflow_dispatch, stay untrusted."; };
           trustedJobs = {
