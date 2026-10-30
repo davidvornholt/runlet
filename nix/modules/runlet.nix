@@ -194,7 +194,7 @@ in
           logDriver = "k8s-file";
           logSizeMax = "10m";
         };
-        description = "Hardened runtime profile for public pull request jobs. Production hosts should keep maxConcurrentJobs at 1 unless extra headroom is dedicated to untrusted CI.";
+        description = "Hardened runtime profile for public pull request jobs and other untrusted jobs. Production hosts should keep maxConcurrentJobs at 1 unless extra headroom is dedicated to untrusted CI.";
       };
 
       users = {
@@ -238,10 +238,10 @@ in
         options = {
           enabled = lib.mkEnableOption "this repository";
           publicPullRequests = {
-            enabled = lib.mkEnableOption "public pull request jobs";
+            enabled = lib.mkEnableOption "public pull request jobs and other untrusted jobs, such as workflow_dispatch runs";
             timeout = lib.mkOption { type = lib.types.str; default = "15m"; description = "Timeout for public pull request jobs."; };
           };
-          trustedBranches = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ "main" ]; description = "Branch names or prefix patterns like release/* that may use trusted policy."; };
+          trustedBranches = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ "main" ]; description = "Branch names or prefix patterns like release/* whose push runs from the repository itself use trusted policy. Other events on these branches, such as workflow_dispatch, stay untrusted."; };
           trustedJobs = {
             allowRegistryPush = lib.mkOption { type = lib.types.bool; default = false; description = "Allow trusted jobs to push registry images."; };
             allowDeploy = lib.mkOption { type = lib.types.bool; default = false; description = "Allow trusted jobs to run deployment steps."; };

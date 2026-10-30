@@ -3,6 +3,7 @@ use crate::concurrency::ConcurrencyLimiter;
 use crate::config::{Config, TrustClass};
 use crate::duration::parse_duration;
 use crate::github::{GitHubClient, RepositoryId};
+use crate::job_trust::{classify_job, JobTrust};
 use crate::orchestrator_files::{
     abort_claimed_job, read_secret, runner_token_env_path, write_runner_token_env,
 };
@@ -46,6 +47,22 @@ pub enum OrchestratorError {
     ConcurrencyBusy,
 }
 
+/// A queued job plus its verified trust, kept across concurrency retries so a
+/// busy runner pool does not repeat the GitHub lookups.
+pub(crate) struct PendingJob {
+    request: JobRequest,
+    trust: Option<JobTrust>,
+}
+
+impl From<JobRequest> for PendingJob {
+    fn from(request: JobRequest) -> Self {
+        Self {
+            request,
+            trust: None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Orchestrator {
     pub(crate) config: Config,
@@ -69,7 +86,7 @@ impl Orchestrator {
         store.mark_interrupted_jobs_cleanup_pending()?;
         let webhook_secret = read_secret(&self.config.orchestrator.webhook_secret_file)?;
         let cleanup_interval = parse_duration(&self.config.orchestrator.cleanup_interval)?;
-        let (sender, receiver) = mpsc::channel::<JobRequest>();
+        let (sender, receiver) = mpsc::channel::<PendingJob>();
         let shared_receiver = Arc::new(Mutex::new(receiver));
 
         for worker_id in 0..self.config.runtime.max_concurrent_jobs {
@@ -99,21 +116,32 @@ impl Orchestrator {
         Ok(())
     }
 
-    fn worker_loop(&self, receiver: Arc<Mutex<Receiver<JobRequest>>>, sender: Sender<JobRequest>) {
+    fn worker_loop(&self, receiver: Arc<Mutex<Receiver<PendingJob>>>, sender: Sender<PendingJob>) {
         loop {
-            let request = {
+            let pending = {
                 let locked = receiver
                     .lock()
                     .expect("job receiver lock should not be poisoned");
                 locked.recv()
             };
-            let Ok(request) = request else {
+            let Ok(PendingJob { request, trust }) = pending else {
                 return;
             };
-            match self.run_job(request.clone()) {
+            let trust = match trust.map_or_else(|| self.verify_trust(&request), Ok) {
+                Ok(trust) => trust,
+                Err(error) => {
+                    tracing::warn!(%error, "job failed");
+                    continue;
+                }
+            };
+            match self.run_job(request.clone(), trust.clone()) {
                 Ok(()) => {}
                 Err(OrchestratorError::ConcurrencyBusy) => {
-                    if sender.send(request).is_err() {
+                    let retry = PendingJob {
+                        request,
+                        trust: Some(trust),
+                    };
+                    if sender.send(retry).is_err() {
                         return;
                     }
                     thread::sleep(std::time::Duration::from_millis(100));
@@ -125,11 +153,36 @@ impl Orchestrator {
         }
     }
 
-    pub fn run_job(&self, request: JobRequest) -> Result<(), OrchestratorError> {
+    /// Checks the runlet label before any GitHub lookup, then classifies the
+    /// job from its workflow run.
+    fn verify_trust(&self, request: &JobRequest) -> Result<JobTrust, OrchestratorError> {
+        if !is_runlet_labeled(&request.labels) {
+            return Err(OrchestratorError::PolicyDenied(
+                "job is missing required runlet label".to_string(),
+            ));
+        }
+        let repository = RepositoryId::parse(&request.repository)?;
+        Ok(match self.config.repositories.get(&request.repository) {
+            Some(repository_config) if repository_config.enabled => classify_job(
+                &self.github,
+                &repository,
+                &repository_config.trusted_branches,
+                request.run_id,
+            ),
+            _ => JobTrust::unverified("repository is not enabled in Runlet configuration"),
+        })
+    }
+
+    fn run_job(&self, request: JobRequest, trust: JobTrust) -> Result<(), OrchestratorError> {
+        let JobTrust {
+            event,
+            branch,
+            pull_request_check,
+        } = trust;
         let context = JobContext {
             repository: request.repository.clone(),
-            event: request.event,
-            branch: request.branch.clone(),
+            event,
+            branch,
         };
         let policy = match decide(&self.config, &context) {
             PolicyDecision::Allow(policy) => policy,
@@ -138,13 +191,11 @@ impl Orchestrator {
             }
         };
 
-        let runlet_labeled = request.labels.iter().any(|label| label == "runlet");
-        if !runlet_labeled {
-            return Err(OrchestratorError::PolicyDenied(
-                "job is missing required runlet label".to_string(),
-            ));
-        }
+        let runlet_labeled = is_runlet_labeled(&request.labels);
         validate_capability_labels(&policy, &request.labels)?;
+        let pull_request_numbers = pull_request_check
+            .pull_request_numbers()
+            .map_err(OrchestratorError::PolicyDenied)?;
         let Some(_permit) = self.concurrency.try_acquire(policy.trust_class) else {
             return Err(OrchestratorError::ConcurrencyBusy);
         };
@@ -198,10 +249,10 @@ impl Orchestrator {
         }
         store.append_event(&job_id, "queued", "job accepted by runlet")?;
 
-        if request.event == GitHubEventKind::PullRequestFromFork {
+        if event == GitHubEventKind::Untrusted {
             if let Some(repository_config) = self.config.repositories.get(&request.repository) {
                 let mut changed_files = Vec::new();
-                for pull_request_number in &request.pull_request_numbers {
+                for pull_request_number in &pull_request_numbers {
                     let files = match self
                         .github
                         .pull_request_changed_files(&repository, *pull_request_number)
@@ -222,7 +273,7 @@ impl Orchestrator {
                 );
                 if matches!(decision, WorkflowRiskDecision::RequireApproval { .. }) {
                     let mut approved = false;
-                    for pull_request_number in &request.pull_request_numbers {
+                    for pull_request_number in &pull_request_numbers {
                         match self.github.pull_request_has_label(
                             &repository,
                             *pull_request_number,
@@ -302,7 +353,7 @@ impl Orchestrator {
                 &mount.namespace,
                 "default",
                 &request.repository,
-                request.event != GitHubEventKind::PullRequestFromFork,
+                event != GitHubEventKind::Untrusted,
             )?;
         }
         store.set_job_status(&job_id, JobStatus::Running)?;
@@ -362,4 +413,8 @@ impl Orchestrator {
 
         self.cleanup_job(&store, &repository, &job_id, &runner_name, &workspace)
     }
+}
+
+fn is_runlet_labeled(labels: &[String]) -> bool {
+    labels.iter().any(|label| label == "runlet")
 }

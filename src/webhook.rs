@@ -1,4 +1,3 @@
-use crate::policy::GitHubEventKind;
 use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
@@ -16,21 +15,20 @@ pub enum WebhookError {
     UnsupportedEvent(String),
     #[error("failed to parse webhook payload: {0}")]
     InvalidPayload(String),
-    #[error("pull request workflow_job payload did not include a pull request number")]
-    MissingPullRequestNumber,
     #[error("workflow_job action {0} is ignored")]
     IgnoredAction(String),
 }
 
+/// A queued job as reported by the `workflow_job` webhook. It carries no trust
+/// information: the payload cannot tell a fork pull request from a push, so the
+/// orchestrator verifies trust from the workflow run identified by `run_id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobRequest {
     pub github_job_id: i64,
+    pub run_id: u64,
     pub repository: String,
     pub repo_url: String,
-    pub branch: String,
-    pub event: GitHubEventKind,
     pub labels: Vec<String>,
-    pub pull_request_numbers: Vec<u64>,
 }
 
 pub fn verify_signature(secret: &[u8], body: &[u8], signature: &str) -> Result<(), WebhookError> {
@@ -59,35 +57,12 @@ fn parse_workflow_job(body: &[u8]) -> Result<JobRequest, WebhookError> {
         return Err(WebhookError::IgnoredAction(payload.action));
     }
 
-    let repository = format!("github:{}", payload.repository.full_name);
-    let head_branch = payload.workflow_job.head_branch.unwrap_or_default();
-    let pull_request_numbers = payload
-        .workflow_job
-        .pull_requests
-        .iter()
-        .filter_map(|pull_request| pull_request.number)
-        .collect::<Vec<_>>();
-    if !payload.workflow_job.pull_requests.is_empty() && pull_request_numbers.is_empty() {
-        return Err(WebhookError::MissingPullRequestNumber);
-    }
-    let event = if payload.workflow_job.pull_requests.is_empty() {
-        if head_branch.starts_with("refs/tags/") {
-            GitHubEventKind::Release
-        } else {
-            GitHubEventKind::BranchPush
-        }
-    } else {
-        GitHubEventKind::PullRequestFromFork
-    };
-
     Ok(JobRequest {
         github_job_id: payload.workflow_job.id,
-        repository,
+        run_id: payload.workflow_job.run_id,
+        repository: format!("github:{}", payload.repository.full_name),
         repo_url: payload.repository.html_url,
-        branch: head_branch,
-        event,
         labels: payload.workflow_job.labels,
-        pull_request_numbers,
     })
 }
 
@@ -101,15 +76,8 @@ struct WorkflowJobPayload {
 #[derive(Debug, Deserialize)]
 struct WorkflowJob {
     id: i64,
-    head_branch: Option<String>,
+    run_id: u64,
     labels: Vec<String>,
-    #[serde(default)]
-    pull_requests: Vec<WorkflowJobPullRequest>,
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkflowJobPullRequest {
-    number: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,24 +90,11 @@ struct Repository {
 mod tests {
     use super::*;
 
-    fn payload(pull_requests: &str) -> Vec<u8> {
-        payload_with_branch("main", pull_requests)
-    }
-
-    fn payload_with_branch(branch: &str, pull_requests: &str) -> Vec<u8> {
-        payload_with_head_branch(&serde_json::to_string(branch).unwrap(), pull_requests)
-    }
-
-    fn payload_with_head_branch(head_branch: &str, pull_requests: &str) -> Vec<u8> {
+    fn payload(workflow_job: &str) -> Vec<u8> {
         format!(
             r#"{{
                 "action": "queued",
-                "workflow_job": {{
-                    "id": 42,
-                    "head_branch": {head_branch},
-                    "labels": ["self-hosted", "runlet"],
-                    "pull_requests": {pull_requests}
-                }},
+                "workflow_job": {workflow_job},
                 "repository": {{
                     "full_name": "org/project",
                     "html_url": "https://github.com/org/project"
@@ -166,61 +121,38 @@ mod tests {
 
     #[test]
     fn parses_workflow_job_queue_event() {
-        let request = parse_event("workflow_job", &payload("[]"))
-            .unwrap()
-            .expect("queued event should produce a job");
-        assert_eq!(request.github_job_id, 42);
-        assert_eq!(request.repository, "github:org/project");
-        assert_eq!(request.event, GitHubEventKind::BranchPush);
-        assert_eq!(request.labels, ["self-hosted", "runlet"]);
-    }
-
-    #[test]
-    fn treats_pull_request_jobs_as_untrusted() {
-        let request = parse_event("workflow_job", &payload(r#"[{"number": 7}]"#))
-            .unwrap()
-            .expect("queued event should produce a job");
-        assert_eq!(request.event, GitHubEventKind::PullRequestFromFork);
-        assert_eq!(request.pull_request_numbers, [7]);
-    }
-
-    #[test]
-    fn rejects_pull_request_payloads_without_numbers() {
+        let request = parse_event(
+            "workflow_job",
+            &payload(
+                r#"{
+                    "id": 42,
+                    "run_id": 7001,
+                    "head_branch": "main",
+                    "labels": ["self-hosted", "runlet"]
+                }"#,
+            ),
+        )
+        .unwrap()
+        .expect("queued event should produce a job");
         assert_eq!(
-            parse_event("workflow_job", &payload(r#"[{}]"#)).unwrap_err(),
-            WebhookError::MissingPullRequestNumber
+            request,
+            JobRequest {
+                github_job_id: 42,
+                run_id: 7001,
+                repository: "github:org/project".to_string(),
+                repo_url: "https://github.com/org/project".to_string(),
+                labels: vec!["self-hosted".to_string(), "runlet".to_string()],
+            }
         );
     }
 
     #[test]
-    fn accepts_nullable_head_branch() {
-        let request = parse_event("workflow_job", &payload_with_head_branch("null", "[]"))
-            .unwrap()
-            .expect("queued event should produce a job");
-        assert_eq!(request.event, GitHubEventKind::BranchPush);
-        assert_eq!(request.branch, "");
-    }
-
-    #[test]
-    fn treats_release_branch_names_as_branch_pushes() {
-        let request = parse_event(
+    fn rejects_workflow_jobs_without_run_id() {
+        let error = parse_event(
             "workflow_job",
-            &payload_with_branch("release/2026-05", "[]"),
+            &payload(r#"{"id": 42, "head_branch": "main", "labels": ["runlet"]}"#),
         )
-        .unwrap()
-        .expect("queued event should produce a job");
-        assert_eq!(request.event, GitHubEventKind::BranchPush);
-        assert_eq!(request.branch, "release/2026-05");
-    }
-
-    #[test]
-    fn treats_tag_refs_as_release_events() {
-        let request = parse_event(
-            "workflow_job",
-            &payload_with_branch("refs/tags/v1.0.0", "[]"),
-        )
-        .unwrap()
-        .expect("queued event should produce a job");
-        assert_eq!(request.event, GitHubEventKind::Release);
+        .unwrap_err();
+        assert!(matches!(error, WebhookError::InvalidPayload(_)));
     }
 }
