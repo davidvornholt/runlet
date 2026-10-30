@@ -103,14 +103,14 @@ let
 
   runtimeProfileType = lib.types.submodule {
     options = {
-      maxConcurrentJobs = lib.mkOption { type = lib.types.ints.positive; default = 4; description = "Maximum concurrent jobs for this trust class."; };
+      maxConcurrentJobs = lib.mkOption { type = lib.types.nullOr lib.types.ints.positive; default = null; description = "Maximum concurrent jobs for this trust class. Null uses the Runlet trust-class default."; };
       cpu = lib.mkOption { type = lib.types.nullOr lib.types.ints.positive; default = null; description = "CPU limit override for this trust class. Null uses the Runlet trust-class default."; };
       memory = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Memory limit override for this trust class. Null uses the Runlet trust-class default."; };
       disk = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Podman storage size override for this trust class. Null uses the Runlet trust-class default."; };
       timeout = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Timeout override for this trust class. Null uses the Runlet trust-class default."; };
-      pidsLimit = lib.mkOption { type = lib.types.nullOr lib.types.ints.positive; default = 2048; description = "Podman PID limit. Null uses the Runlet trust-class default."; };
-      ulimitNofile = lib.mkOption { type = lib.types.nullOr lib.types.str; default = "4096:4096"; description = "nofile ulimit. Null uses the Runlet trust-class default."; };
-      ulimitNproc = lib.mkOption { type = lib.types.nullOr lib.types.str; default = "2048:2048"; description = "nproc ulimit. Null uses the Runlet trust-class default."; };
+      pidsLimit = lib.mkOption { type = lib.types.nullOr lib.types.ints.positive; default = null; description = "Podman PID limit. Null uses the Runlet trust-class default."; };
+      ulimitNofile = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "nofile ulimit. Null uses the Runlet trust-class default."; };
+      ulimitNproc = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "nproc ulimit. Null uses the Runlet trust-class default."; };
       cpusetCpus = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Optional cpuset CPU pinning. Null uses the Runlet trust-class default."; };
       deviceReadBps = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; description = "Podman --device-read-bps throttles."; };
       deviceWriteBps = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; description = "Podman --device-write-bps throttles."; };
