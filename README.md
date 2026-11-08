@@ -347,7 +347,10 @@ podman push ghcr.io/org/runlet-actions-runner:custom
 ```
 
 The configured runner image must contain the `runlet-runner-entrypoint` binary
-and the GitHub Actions runner installation.
+and the GitHub Actions runner installation. `RUNNER_STATE_DIR` must not contain
+`RUNNER_DIR` or be inside it: the entrypoint rejects either overlap before clearing
+the state directory. Paths resolving to the same directory use the installation
+in place.
 
 ## Security considerations
 
