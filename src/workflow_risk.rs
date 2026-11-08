@@ -51,11 +51,13 @@ fn path_matches_pattern(pattern: &str, path: &str) -> bool {
     if pattern == path || pattern == "**" {
         return true;
     }
+    if let Some(suffix) = pattern.strip_prefix("**/") {
+        return std::iter::once(path)
+            .chain(path.match_indices('/').map(|(index, _)| &path[index + 1..]))
+            .any(|remainder| path_matches_pattern(suffix, remainder));
+    }
     if let Some(prefix) = pattern.strip_suffix("/**") {
         return path == prefix || path.starts_with(&format!("{prefix}/"));
-    }
-    if let Some(suffix) = pattern.strip_prefix("**/") {
-        return path == suffix || path.ends_with(&format!("/{suffix}"));
     }
     if let Some(prefix) = pattern.strip_suffix("/*") {
         return path.strip_prefix(prefix).is_some_and(|rest| {
@@ -90,6 +92,44 @@ mod tests {
         assert!(is_high_risk_path(&config, "crates/foo/action.yaml"));
         assert!(is_high_risk_path(&config, "scripts/build.sh"));
         assert!(!is_high_risk_path(&config, "src/lib.rs"));
+    }
+
+    #[test]
+    fn recursive_high_risk_patterns_match_wildcard_suffixes() {
+        let mut config = WorkflowRiskConfig {
+            high_risk_paths: vec!["**/*.sh".to_string()],
+            additional_high_risk_paths: vec!["**/ci/**".to_string()],
+            ..WorkflowRiskConfig::default()
+        };
+        for path in [
+            "build.sh",
+            "tools/build.sh",
+            "tools/nested/build.sh",
+            "ci/config",
+            "tools/ci/nested/config",
+        ] {
+            let files = vec![path.to_string()];
+            assert!(
+                matches!(
+                    workflow_risk_decision(&config, &files, false, true),
+                    WorkflowRiskDecision::Deny { .. }
+                ),
+                "high-risk path {path} must be denied"
+            );
+            config.require_approval_for_workflow_changes = true;
+            assert!(matches!(
+                workflow_risk_decision(&config, &files, false, true),
+                WorkflowRiskDecision::RequireApproval { .. }
+            ));
+            assert_eq!(
+                workflow_risk_decision(&config, &files, true, true),
+                WorkflowRiskDecision::Allow
+            );
+            config.require_approval_for_workflow_changes = false;
+        }
+        for path in ["tools/build.sh.txt", "src/lib.rs", "tools/circle/config"] {
+            assert!(!is_high_risk_path(&config, path), "unrelated path {path}");
+        }
     }
 
     #[test]
