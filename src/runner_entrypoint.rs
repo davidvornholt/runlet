@@ -51,9 +51,19 @@ impl RunnerEntrypointConfig {
         if state_dir == &self.runner_dir {
             return Ok(());
         }
-        if state_dir.exists() {
-            fs::remove_dir_all(state_dir)?;
+        let source = fs::canonicalize(&self.runner_dir)?;
+        fs::create_dir_all(state_dir)?;
+        let destination = fs::canonicalize(state_dir)?;
+        if source == destination {
+            return Ok(());
         }
+        if source.starts_with(&destination) || destination.starts_with(&source) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "runner installation and state directories must not contain each other",
+            ));
+        }
+        fs::remove_dir_all(state_dir)?;
         copy_dir_recursive(&self.runner_dir, state_dir)?;
         self.runner_dir = state_dir.clone();
         Ok(())
@@ -145,6 +155,50 @@ mod tests {
         assert_eq!(config.runner_dir, state);
         assert!(config.runner_dir.join("config.sh").exists());
         assert!(config.runner_dir.join("run.sh").exists());
+
+        let alias = directory.path().join("state-alias");
+        std::os::unix::fs::symlink(&state, &alias).unwrap();
+        config.state_dir = Some(alias.clone());
+        config.prepare_writable_runner_dir().unwrap();
+        assert_eq!(fs::read_link(alias).unwrap(), state);
+        assert!(config.runner_dir.join("config.sh").exists());
+    }
+
+    #[test]
+    fn rejects_overlapping_runner_state_without_deleting_installation() {
+        for nested_state in [false, true] {
+            let directory = tempfile::tempdir().expect("tempdir should be created");
+            let source = directory.path().join("runner");
+            fs::create_dir(&source).unwrap();
+            let script = source.join("config.sh");
+            fs::write(&script, "runner installation").unwrap();
+            let unrelated = directory.path().join("keep.txt");
+            fs::write(&unrelated, "unrelated data").unwrap();
+            let state = if nested_state {
+                source.join("state")
+            } else {
+                directory.path().to_path_buf()
+            };
+            let mut config = RunnerEntrypointConfig {
+                runner_dir: source.clone(),
+                state_dir: Some(state),
+                name: "runlet-1".to_string(),
+                repo_url: "https://github.com/org/project".to_string(),
+                token: "token".to_string(),
+                labels: "self-hosted,runlet".to_string(),
+                ephemeral: true,
+            };
+
+            let result = config.prepare_writable_runner_dir();
+
+            assert!(
+                script.exists(),
+                "state initialization deleted the runner installation"
+            );
+            assert_eq!(fs::read_to_string(&unrelated).unwrap(), "unrelated data");
+            assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+            assert_eq!(config.runner_dir, source);
+        }
     }
 
     #[test]
