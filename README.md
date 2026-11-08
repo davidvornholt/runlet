@@ -373,8 +373,10 @@ in place.
   cleanup failures from filling production storage.
 - Workflow definitions, local composite actions, `action.yml`/`action.yaml`, and
   configured build scripts are high risk. Public pull requests that change those
-  paths are denied by default before runner registration tokens are created. If
-  approval mode is enabled, apply the configured approval label and then rerun
+  paths are denied by default before runner registration tokens are created.
+  Recursive patterns such as `**/*.sh` and `**/ci/**` match at the repository root
+  and at any directory depth in both `high_risk_paths` and `additional_high_risk_paths`.
+  If approval mode is enabled, apply the configured approval label and then rerun
   the workflow job or redeliver the `workflow_job` webhook so Runlet can observe
   the approval before creating a runner token.
 - Optional untrusted seccomp, AppArmor, and SELinux profiles can be configured
