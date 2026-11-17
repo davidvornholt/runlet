@@ -5,6 +5,7 @@
 
 use crate::config::TrustClass;
 use crate::github::{GitHubClient, GitHubError, RepositoryId};
+use reqwest::StatusCode;
 use serde::Deserialize;
 use std::fs;
 use std::io;
@@ -64,6 +65,15 @@ pub fn prune_allowed_runs(jobs_dir: &Path, max_age: Duration) -> io::Result<()> 
 #[derive(Debug, Deserialize)]
 struct WorkflowJob {
     status: String,
+}
+
+impl GitHubError {
+    /// Whether GitHub refused to remove a runner because it shows the runner
+    /// as running a job.
+    pub fn is_runner_busy(&self) -> bool {
+        matches!(self, GitHubError::Api { status, body }
+            if *status == StatusCode::UNPROCESSABLE_ENTITY && body.contains("currently running a job"))
+    }
 }
 
 impl GitHubClient {
@@ -132,6 +142,21 @@ mod tests {
 
         assert!(!untrusted.join("1").exists());
         assert!(untrusted.join("2").exists());
+    }
+
+    #[test]
+    fn recognizes_runners_github_still_shows_as_busy() {
+        let busy = GitHubError::Api {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            body: r#"{"message":"Bad request - Runner runlet-1 is currently running a job and cannot be deleted.","status":"422"}"#.to_string(),
+        };
+        let other = GitHubError::Api {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            body: r#"{"message":"Validation Failed"}"#.to_string(),
+        };
+
+        assert!(busy.is_runner_busy());
+        assert!(!other.is_runner_busy());
     }
 
     #[test]

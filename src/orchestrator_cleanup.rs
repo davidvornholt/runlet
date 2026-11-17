@@ -131,6 +131,13 @@ impl Orchestrator {
         }
         match self.github.remove_runner_by_name(repository, runner_name) {
             Ok(()) => store.mark_runner_revoked(runner_name)?,
+            // GitHub can show a job that the job-started hook stopped as running
+            // for minutes. With its container gone the runner can't take another
+            // job, and GitHub removes the ephemeral runner once that job ends.
+            Err(error) if cleanup_error.is_none() && error.is_runner_busy() => {
+                tracing::info!(%job_id, "GitHub still shows the removed runner as busy and removes it itself");
+                store.mark_runner_revoked(runner_name)?;
+            }
             Err(error) => {
                 tracing::warn!(%error, %job_id, "failed to remove GitHub runner");
                 cleanup_error.get_or_insert_with(|| error.into());
