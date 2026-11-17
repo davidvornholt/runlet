@@ -19,7 +19,6 @@
       maxConcurrentJobs = 4;
       defaultCpu = 2;
       defaultMemory = "4G";
-      defaultDisk = "20G";
       defaultTimeout = "20m";
       runnerImage = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0";
     };

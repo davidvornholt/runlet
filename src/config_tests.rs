@@ -30,7 +30,6 @@ fn parses_plan_shaped_config() {
                 max_concurrent_jobs = 4
                 default_cpu = 2
                 default_memory = "4G"
-                default_disk = "20G"
                 default_timeout = "20m"
                 runner_image = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0"
 
@@ -205,6 +204,38 @@ fn rejects_invalid_resource_and_profile_values() {
             field: "seccomp_profile"
         }
     ));
+}
+
+#[test]
+fn rejects_disk_limits_rootless_podman_cannot_enforce() {
+    let parsed: Config = toml::from_str(
+        r#"
+                [runtime]
+                default_disk = "20G"
+
+                [runtime.untrusted]
+                disk = "10G"
+            "#,
+    )
+    .expect("disk options should parse so validation can explain them");
+    assert_eq!(parsed.runtime.default_disk.as_deref(), Some("20G"));
+    assert_eq!(parsed.runtime.untrusted.disk.as_deref(), Some("10G"));
+
+    let mut config = valid_config();
+    config.runtime.default_disk = Some("20G".to_string());
+    let error = config.validate().unwrap_err();
+    assert!(error
+        .to_string()
+        .starts_with("runtime.default_disk is not supported"));
+
+    config = valid_config();
+    config.runtime.untrusted.disk = Some("10G".to_string());
+    let error = config.validate().unwrap_err();
+    assert!(matches!(
+        &error,
+        ConfigError::UnsupportedDiskLimit { field } if field == "runtime.untrusted.disk"
+    ));
+    assert!(error.to_string().contains("size-limited filesystems"));
 }
 
 #[test]

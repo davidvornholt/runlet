@@ -50,7 +50,10 @@ pub fn prepare_cache_mount(
         path: path.clone(),
         source,
     })?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o770)).map_err(|source| {
+    // The container's runner user maps to a subordinate ID, so it can only
+    // write here through the "other" bits. The NixOS module keeps the cache
+    // root at 0770, which keeps other host users out.
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o777)).map_err(|source| {
         CacheError::CreateNamespace {
             path: path.clone(),
             source,
@@ -78,7 +81,7 @@ mod tests {
     }
 
     #[test]
-    fn prepares_group_writable_cache_namespace() {
+    fn prepares_cache_namespace_writable_by_mapped_runner_user() {
         let directory = tempfile::tempdir().expect("tempdir should be created");
         let config = CacheConfig {
             enable: true,
@@ -91,6 +94,6 @@ mod tests {
             .expect("cache should be enabled");
 
         let mode = fs::metadata(mount.path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o770);
+        assert_eq!(mode, 0o777);
     }
 }

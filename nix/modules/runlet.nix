@@ -9,7 +9,6 @@ let
     max_concurrent_jobs = profile.maxConcurrentJobs;
     cpu = profile.cpu;
     memory = profile.memory;
-    disk = profile.disk;
     timeout = profile.timeout;
     pids_limit = profile.pidsLimit;
     ulimit_nofile = profile.ulimitNofile;
@@ -41,7 +40,6 @@ let
       max_concurrent_jobs = cfg.runtime.maxConcurrentJobs;
       default_cpu = cfg.runtime.defaultCpu;
       default_memory = cfg.runtime.defaultMemory;
-      default_disk = cfg.runtime.defaultDisk;
       default_timeout = cfg.runtime.defaultTimeout;
       runner_image = cfg.runtime.runnerImage;
       jobs_dir = cfg.runtime.jobsDir;
@@ -99,6 +97,7 @@ let
     }) cfg.repositories;
   };
   package = cfg.package;
+  podmanPackage = config.virtualisation.podman.package;
   databaseDir = builtins.dirOf cfg.state.databasePath;
 
   runtimeProfileType = lib.types.submodule {
@@ -106,7 +105,6 @@ let
       maxConcurrentJobs = lib.mkOption { type = lib.types.nullOr lib.types.ints.positive; default = null; description = "Maximum concurrent jobs for this trust class. Null uses the Runlet trust-class default."; };
       cpu = lib.mkOption { type = lib.types.nullOr lib.types.ints.positive; default = null; description = "CPU limit override for this trust class. Null uses the Runlet trust-class default."; };
       memory = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Memory limit override for this trust class. Null uses the Runlet trust-class default."; };
-      disk = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Podman storage size override for this trust class. Null uses the Runlet trust-class default."; };
       timeout = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Timeout override for this trust class. Null uses the Runlet trust-class default."; };
       pidsLimit = lib.mkOption { type = lib.types.nullOr lib.types.ints.positive; default = null; description = "Podman PID limit. Null uses the Runlet trust-class default."; };
       ulimitNofile = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "nofile ulimit. Null uses the Runlet trust-class default."; };
@@ -146,6 +144,10 @@ ${allowRules}${denyRules}      }
   '';
 in
 {
+  imports = [
+    (lib.mkRemovedOptionModule [ "services" "runlet" "runtime" "defaultDisk" ] "Rootless Podman can't limit a container's disk use. Put services.runlet.runtime.storage.trustedStorageRoot and untrustedStorageRoot on size-limited filesystems instead.")
+  ];
+
   options.services.runlet = {
     enable = lib.mkEnableOption "Runlet ephemeral GitHub Actions runner orchestrator";
 
@@ -174,7 +176,6 @@ in
       maxConcurrentJobs = lib.mkOption { type = lib.types.ints.positive; default = 4; description = "Global maximum number of jobs Runlet may execute at once. Per-trust-class limits are enforced within this cap."; };
       defaultCpu = lib.mkOption { type = lib.types.ints.positive; default = 2; description = "Default CPU limit for runner containers."; };
       defaultMemory = lib.mkOption { type = lib.types.str; default = "4G"; description = "Default memory limit for runner containers."; };
-      defaultDisk = lib.mkOption { type = lib.types.str; default = "20G"; description = "Default disk budget for job workspaces."; };
       defaultTimeout = lib.mkOption { type = lib.types.str; default = "20m"; description = "Default trusted job timeout."; };
       runnerImage = lib.mkOption { type = lib.types.str; example = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0"; description = "OCI image containing the runlet-runner-entrypoint binary and GitHub Actions runner installation."; };
       jobsDir = lib.mkOption { type = lib.types.path; default = "/var/lib/runlet/jobs"; description = "Directory for per-job host staging data."; };
@@ -186,7 +187,6 @@ in
           maxConcurrentJobs = 1;
           cpu = 1;
           memory = "2G";
-          disk = "10G";
           timeout = "15m";
           pidsLimit = 256;
           ulimitNofile = "1024:1024";
@@ -212,8 +212,8 @@ in
       };
 
       storage = {
-        trustedStorageRoot = lib.mkOption { type = lib.types.path; default = "/var/lib/runlet/podman-trusted"; description = "Dedicated Podman storage root for the trusted job user. Mount this on a quota-limited filesystem in production."; };
-        untrustedStorageRoot = lib.mkOption { type = lib.types.path; default = "/var/lib/runlet/podman-untrusted"; description = "Dedicated Podman storage root for the untrusted job user. Mount this on a quota-limited filesystem in production."; };
+        trustedStorageRoot = lib.mkOption { type = lib.types.path; default = "/var/lib/runlet/podman-trusted"; description = "Dedicated Podman storage root for the trusted job user. Mount this on a size-limited filesystem in production: it bounds the disk use of these jobs."; };
+        untrustedStorageRoot = lib.mkOption { type = lib.types.path; default = "/var/lib/runlet/podman-untrusted"; description = "Dedicated Podman storage root for the untrusted job user. Mount this on a size-limited filesystem in production: it bounds the disk use of these jobs."; };
         warnFreeSpaceBytes = lib.mkOption { type = lib.types.ints.unsigned; default = 5368709120; description = "Free-space warning threshold for Runlet-owned storage paths."; };
       };
 
@@ -228,10 +228,10 @@ in
     cache = {
       enable = lib.mkEnableOption "Runlet local build cache";
       backend = lib.mkOption { type = lib.types.enum [ "local" ]; default = "local"; description = "Cache backend."; };
-      path = lib.mkOption { type = lib.types.path; default = "/var/cache/runlet"; description = "Local cache path. Mount on quota-limited storage for production hosts."; };
+      path = lib.mkOption { type = lib.types.path; default = "/var/cache/runlet"; description = "Local cache path. Mount on a size-limited filesystem for production hosts."; };
     };
 
-    state.databasePath = lib.mkOption { type = lib.types.path; default = "/var/lib/runlet/runlet.sqlite3"; description = "SQLite database path for orchestration metadata."; };
+    state.databasePath = lib.mkOption { type = lib.types.path; default = "/var/lib/runlet/orchestrator/runlet.sqlite3"; description = "SQLite database path for orchestration metadata."; };
 
     repositories = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule {
@@ -268,11 +268,17 @@ in
     virtualisation.podman = {
       enable = true;
       dockerSocket.enable = false;
+      # Runner containers use slirp4netns networking, which Podman doesn't ship by default.
+      extraPackages = [ pkgs.slirp4netns ];
     };
 
     networking.nftables = lib.mkIf cfg.runtime.network.enableUntrustedFirewall {
       enable = true;
       ruleset = untrustedFirewallRules;
+      # The build-time check runs in a sandbox without the untrusted user.
+      preCheckRuleset = ''
+        sed -i ${lib.escapeShellArg "s/meta skuid \"${cfg.runtime.users.untrusted}\"/meta skuid \"nobody\"/g"} ruleset.conf
+      '';
     };
 
     users.users.${cfg.runtime.users.orchestrator} = {
@@ -288,6 +294,8 @@ in
       home = "/var/lib/runlet/trusted";
       createHome = true;
       autoSubUidGidRange = true;
+      # A lingering user manager delegates the cgroup that Podman needs to enforce job limits.
+      linger = true;
     };
     users.users.${cfg.runtime.users.untrusted} = lib.mkIf cfg.runtime.users.enable {
       isSystemUser = true;
@@ -296,6 +304,7 @@ in
       home = "/var/lib/runlet/untrusted";
       createHome = true;
       autoSubUidGidRange = true;
+      linger = true;
     };
     users.groups.runlet = { };
     users.groups.runlet-trusted = lib.mkIf cfg.runtime.users.enable { };
@@ -303,7 +312,7 @@ in
 
     security.sudo.enable = lib.mkIf cfg.runtime.users.enable true;
     security.sudo.extraConfig = lib.mkIf cfg.runtime.users.enable ''
-      ${cfg.runtime.users.orchestrator} ALL=(${cfg.runtime.users.trusted},${cfg.runtime.users.untrusted}) NOPASSWD: /run/current-system/sw/bin/podman *
+      ${cfg.runtime.users.orchestrator} ALL=(${cfg.runtime.users.trusted},${cfg.runtime.users.untrusted}) NOPASSWD: ${podmanPackage}/bin/podman *
     '';
 
     environment.etc."runlet/seccomp-untrusted-example.json".text = builtins.toJSON {
@@ -315,7 +324,7 @@ in
     };
 
     systemd.tmpfiles.rules = [
-      "d /var/lib/runlet 0750 ${cfg.runtime.users.orchestrator} runlet -"
+      "d /var/lib/runlet 0755 root root -"
       "d /var/lib/runlet/orchestrator 0750 ${cfg.runtime.users.orchestrator} runlet -"
       "d ${cfg.runtime.jobsDir} 0750 ${cfg.runtime.users.orchestrator} runlet -"
       "d ${databaseDir} 0750 ${cfg.runtime.users.orchestrator} runlet -"
@@ -326,8 +335,10 @@ in
       "d ${cfg.runtime.storage.untrustedStorageRoot} 0750 ${cfg.runtime.users.untrusted} runlet-untrusted -"
       "d /var/lib/runlet/trusted/.config 0750 ${cfg.runtime.users.trusted} runlet-trusted -"
       "d /var/lib/runlet/trusted/.config/containers 0750 ${cfg.runtime.users.trusted} runlet-trusted -"
+      "L+ /var/lib/runlet/trusted/.config/containers/storage.conf - - - - /etc/runlet/storage-trusted.conf"
       "d /var/lib/runlet/untrusted/.config 0750 ${cfg.runtime.users.untrusted} runlet-untrusted -"
       "d /var/lib/runlet/untrusted/.config/containers 0750 ${cfg.runtime.users.untrusted} runlet-untrusted -"
+      "L+ /var/lib/runlet/untrusted/.config/containers/storage.conf - - - - /etc/runlet/storage-untrusted.conf"
     ] ++ lib.optionals cfg.cache.enable [
       "d ${cfg.cache.path} 0770 ${cfg.runtime.users.orchestrator} runlet -"
     ];
@@ -347,17 +358,12 @@ in
       '';
     };
 
-    system.activationScripts.runletPodmanStorage = lib.mkIf cfg.runtime.users.enable ''
-      install -D -m 0640 -o ${cfg.runtime.users.trusted} -g runlet-trusted /etc/runlet/storage-trusted.conf /var/lib/runlet/trusted/.config/containers/storage.conf
-      install -D -m 0640 -o ${cfg.runtime.users.untrusted} -g runlet-untrusted /etc/runlet/storage-untrusted.conf /var/lib/runlet/untrusted/.config/containers/storage.conf
-    '';
-
     systemd.services.runlet-orchestrator = {
       description = "Runlet ephemeral GitHub Actions runner orchestrator";
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
-      path = [ pkgs.podman ] ++ lib.optionals cfg.runtime.users.enable [ "/run/wrappers" ];
+      path = [ podmanPackage ] ++ lib.optionals cfg.runtime.users.enable [ "/run/wrappers" ];
       serviceConfig = {
         User = cfg.runtime.users.orchestrator;
         Group = "runlet";
@@ -370,10 +376,11 @@ in
         # trusted or untrusted runner user.
         PrivateTmp = true;
         ProtectSystem = "strict";
-        ProtectHome = true;
-        ProtectKernelTunables = true;
+        # ProtectHome would hide /run/user, where Podman reaches the runner
+        # users' systemd managers that enforce job limits, and
+        # ProtectControlGroups would stop crun from creating the job's cgroup.
+        InaccessiblePaths = [ "-/home" "-/root" ];
         ProtectKernelModules = true;
-        ProtectControlGroups = true;
         LockPersonality = true;
         ReadWritePaths = [
           "/var/lib/runlet"
