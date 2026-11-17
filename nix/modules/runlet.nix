@@ -263,6 +263,7 @@ in
     assertions = [
       { assertion = !(cfg.runtime.network.enableUntrustedFirewall && !cfg.runtime.users.enable); message = "services.runlet.runtime.network.enableUntrustedFirewall requires services.runlet.runtime.users.enable."; }
       { assertion = !cfg.runtime.users.enable || (cfg.runtime.users.orchestrator != cfg.runtime.users.trusted && cfg.runtime.users.orchestrator != cfg.runtime.users.untrusted && cfg.runtime.users.trusted != cfg.runtime.users.untrusted); message = "services.runlet.runtime.users orchestrator, trusted, and untrusted users must be distinct when user splitting is enabled."; }
+      { assertion = databaseDir != "/var/lib/runlet"; message = "services.runlet.state.databasePath can't be directly in /var/lib/runlet, which the runner users must be able to enter. Stop runlet, move the database to /var/lib/runlet/orchestrator/runlet.sqlite3 keeping its owner, and use that path."; }
     ];
 
     virtualisation.podman = {
