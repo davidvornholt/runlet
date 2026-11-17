@@ -202,35 +202,29 @@ fn run_lookup_failure_is_untrusted_and_blocks_the_job() {
 }
 
 #[test]
-fn non_push_events_on_trusted_branches_are_untrusted() {
-    for event in [
-        "pull_request_target",
-        "workflow_dispatch",
-        "schedule",
-        "merge_group",
+fn runs_that_receive_secrets_are_not_untrusted() {
+    for (event, head_repository) in [
+        ("pull_request", repository(REPOSITORY_ID, "org")),
+        ("pull_request_target", repository(FORK_ID, "attacker")),
+        ("pull_request_target", repository(REPOSITORY_ID, "org")),
+        ("workflow_dispatch", repository(REPOSITORY_ID, "org")),
+        ("schedule", repository(REPOSITORY_ID, "org")),
+        ("merge_group", repository(REPOSITORY_ID, "org")),
+        ("workflow_run", repository(REPOSITORY_ID, "org")),
+        ("push", repository(FORK_ID, "attacker")),
     ] {
         let lookup = FakeLookup {
-            run: Some(run(event, "main", repository(REPOSITORY_ID, "org"))),
+            run: Some(run(event, "main", head_repository)),
             pull_requests: vec![pull_request(9, HEAD_SHA, REPOSITORY_ID)],
             ..FakeLookup::default()
         };
 
         assert_eq!(
             classify(&lookup).event,
-            GitHubEventKind::Untrusted,
+            GitHubEventKind::UntrustedWithSecrets,
             "{event}"
         );
     }
-}
-
-#[test]
-fn push_from_another_repository_is_untrusted() {
-    let lookup = FakeLookup {
-        run: Some(run("push", "main", repository(FORK_ID, "attacker"))),
-        ..FakeLookup::default()
-    };
-
-    assert_eq!(classify(&lookup).event, GitHubEventKind::Untrusted);
 }
 
 #[test]
