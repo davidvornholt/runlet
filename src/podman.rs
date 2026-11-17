@@ -39,6 +39,7 @@ pub fn podman_run(runtime: &RuntimeConfig, job: &PodmanJobSpec) -> ProcessSpec {
     let mut podman_args: Vec<OsString> = vec![
         "run".into(),
         "--rm".into(),
+        "--pull=newer".into(),
         "--name".into(),
         format!("runlet-{}", job.job_id).into(),
         "--label".into(),

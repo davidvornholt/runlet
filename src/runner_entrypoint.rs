@@ -83,6 +83,9 @@ impl RunnerEntrypointConfig {
             self.labels.clone().into(),
             "--work".into(),
             "_work".into(),
+            // An ephemeral runner that updates itself does so during its only
+            // job, so the image must carry a current runner instead.
+            "--disableupdate".into(),
         ];
         if self.ephemeral {
             args.push("--ephemeral".into());
@@ -216,6 +219,7 @@ mod tests {
         let spec = config.configure_command();
         assert_eq!(spec.program, "/actions-runner/config.sh");
         assert!(spec.args.iter().any(|arg| arg == "--ephemeral"));
+        assert!(spec.args.iter().any(|arg| arg == "--disableupdate"));
         assert!(!spec.args.iter().any(|arg| arg == "sh"));
         assert!(!spec.args.iter().any(|arg| arg == "-c"));
     }
