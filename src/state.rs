@@ -57,6 +57,8 @@ pub struct Store {
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> rusqlite::Result<Self> {
         let connection = Connection::open(path)?;
+        // Each job's thread has its own connection, so wait for the others' writes.
+        connection.busy_timeout(std::time::Duration::from_secs(10))?;
         let store = Self { connection };
         store.migrate()?;
         Ok(store)
@@ -233,6 +235,19 @@ impl Store {
         Ok(())
     }
 
+    pub fn set_job_runner_name(&self, job_id: &str, runner_name: &str) -> rusqlite::Result<()> {
+        self.connection.execute(
+            r#"
+            UPDATE jobs
+            SET runner_name = ?2,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE job_id = ?1
+            "#,
+            params![job_id, runner_name],
+        )?;
+        Ok(())
+    }
+
     pub fn append_event(
         &self,
         job_id: &str,
@@ -392,6 +407,21 @@ mod tests {
 
         let job = store.job("1").expect("job query should work").unwrap();
         assert_eq!(job.status, JobStatus::Running);
+    }
+
+    #[test]
+    fn renames_the_runner_of_a_job() {
+        let store = Store::open_memory().expect("store should open");
+        store
+            .upsert_job(&record("1", JobStatus::Queued))
+            .expect("job should insert");
+
+        store
+            .set_job_runner_name("1", "runner-1-1")
+            .expect("runner name should update");
+
+        let job = store.job("1").expect("job query should work").unwrap();
+        assert_eq!(job.runner_name, "runner-1-1");
     }
 
     #[test]

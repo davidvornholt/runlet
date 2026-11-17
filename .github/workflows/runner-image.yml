@@ -7,7 +7,7 @@ on:
       - .github/workflows/runner-image.yml
       - Cargo.lock
       - Cargo.toml
-      - images/actions-runner/Containerfile
+      - images/actions-runner/**
       - src/**
   push:
     branches:
@@ -19,7 +19,7 @@ on:
       - .github/workflows/runner-image.yml
       - Cargo.lock
       - Cargo.toml
-      - images/actions-runner/Containerfile
+      - images/actions-runner/**
       - src/**
   schedule:
     # Runners run with updates disabled, so rebuild with the latest runner release.
