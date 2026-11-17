@@ -129,8 +129,8 @@ Follow these steps to move a workflow job from GitHub-hosted runners such as
    Available capability labels are `runlet-secrets`, `runlet-registry-push`,
    `runlet-deploy`, and `runlet-privileged`.
 
-6. Commit the workflow change and trigger the workflow with a push, pull request,
-   or `workflow_dispatch` event. In GitHub, the job should queue for a
+6. Commit the workflow change and push it to a trusted branch, or open a pull
+   request from a fork. In GitHub, the job should queue for a
    self-hosted runner. Runlet receives the `workflow_job` event, verifies the
    job's trust class from its workflow run, creates a fresh registration token,
    starts one runner container for the job, and removes the runner when the job
@@ -145,8 +145,10 @@ Follow these steps to move a workflow job from GitHub-hosted runners such as
    - The GitHub App lacks the Actions, Contents, or Pull requests read
      permission, so Runlet cannot verify the job and refuses to run it. The
      orchestrator log names the failed lookup.
-   - The job is untrusted (for example a pull request or `workflow_dispatch`
-     run) and `public_pull_requests.enabled` is off for the repository.
+   - The job comes from a run Runlet denies, such as a pull request from a
+     branch of the repository itself or a `workflow_dispatch` run, or it comes
+     from a fork pull request and `public_pull_requests.enabled` is off for the
+     repository.
    - The repository id in Runlet configuration does not match
      `github:<owner>/<repo>`.
    - A requested capability label is not allowed by the repository policy.
@@ -166,11 +168,14 @@ the job's workflow run with the GitHub App and decides the trust class from it:
   `trusted_branches` and is a tag that exists and points at the run's commit
   is a trusted release.
 - A `push` run on any other branch is denied.
-- Every other run is untrusted: `pull_request`, `pull_request_target`,
-  `workflow_dispatch`, scheduled and other events, runs from another
-  repository, and runs Runlet cannot look up. Untrusted jobs run with the
+- A `pull_request` run from a fork is untrusted. GitHub gives it no repository
+  secrets and only a read-only `GITHUB_TOKEN`. Untrusted jobs run with the
   public pull request policy and are denied when
   `public_pull_requests.enabled` is off.
+- Every other run is denied: `pull_request` from a branch of the repository
+  itself, `pull_request_target`, `workflow_dispatch`, scheduled and other
+  events. GitHub gives these runs the repository's secrets, so they can't run
+  as untrusted. Runs Runlet cannot look up are denied too.
 
 Before an untrusted pull request job runs, Runlet finds the open pull request
 whose head matches the run's commit and checks its changed files against the
@@ -374,8 +379,10 @@ in place.
   systems.
 - Do not expose a Docker socket to runner jobs. The NixOS module enables Podman
   and explicitly leaves the Docker socket disabled.
-- Public pull request jobs always run without secrets, cache writes, host log
-  capture, or non-strict networking. Keep `runtime.untrusted.maxConcurrentJobs`
+- Untrusted jobs are fork pull requests, which GitHub runs without repository
+  secrets, and Runlet runs them without cache writes, host log capture, or
+  non-strict networking. In a private repository, keep the Actions settings
+  that send secrets or write tokens to fork pull request workflows off. Keep `runtime.untrusted.maxConcurrentJobs`
   at 1 unless you have reviewed the trust boundary.
 - `strict` networking depends on host firewall integration. On NixOS the module
   installs nftables rules keyed to the untrusted execution UID; on other systems

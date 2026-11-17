@@ -194,14 +194,14 @@ in
           logDriver = "k8s-file";
           logSizeMax = "10m";
         };
-        description = "Hardened runtime profile for public pull request jobs and other untrusted jobs. Production hosts should keep maxConcurrentJobs at 1 unless extra headroom is dedicated to untrusted CI.";
+        description = "Hardened runtime profile for untrusted jobs, which are fork pull request jobs. Production hosts should keep maxConcurrentJobs at 1 unless extra headroom is dedicated to untrusted CI.";
       };
 
       users = {
         enable = lib.mkOption { type = lib.types.bool; default = true; description = "Run Podman as separate Linux users for trusted and untrusted jobs."; };
         orchestrator = lib.mkOption { type = lib.types.str; default = "runlet-orchestrator"; description = "Dedicated orchestrator user that owns coordination state."; };
         trusted = lib.mkOption { type = lib.types.str; default = "runlet-trusted"; description = "Linux user used for trusted job containers."; };
-        untrusted = lib.mkOption { type = lib.types.str; default = "runlet-untrusted"; description = "Linux user used for untrusted job containers, such as public pull request and workflow_dispatch jobs."; };
+        untrusted = lib.mkOption { type = lib.types.str; default = "runlet-untrusted"; description = "Linux user used for untrusted job containers, which run fork pull request jobs."; };
       };
 
       network = {
@@ -238,10 +238,10 @@ in
         options = {
           enabled = lib.mkEnableOption "this repository";
           publicPullRequests = {
-            enabled = lib.mkEnableOption "public pull request jobs and other untrusted jobs, such as workflow_dispatch runs";
-            timeout = lib.mkOption { type = lib.types.str; default = "15m"; description = "Timeout for public pull request jobs and other untrusted jobs, such as workflow_dispatch runs."; };
+            enabled = lib.mkEnableOption "fork pull request jobs, which run as untrusted jobs";
+            timeout = lib.mkOption { type = lib.types.str; default = "15m"; description = "Timeout for fork pull request jobs."; };
           };
-          trustedBranches = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ "main" ]; description = "Branch names or prefix patterns like release/* whose push runs from the repository itself use trusted policy. Other events on these branches, such as workflow_dispatch, stay untrusted."; };
+          trustedBranches = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ "main" ]; description = "Branch names or prefix patterns like release/* whose push runs from the repository itself use trusted policy. Other events on these branches, such as workflow_dispatch, are denied."; };
           trustedJobs = {
             allowRegistryPush = lib.mkOption { type = lib.types.bool; default = false; description = "Allow trusted jobs to push registry images."; };
             allowDeploy = lib.mkOption { type = lib.types.bool; default = false; description = "Allow trusted jobs to run deployment steps."; };

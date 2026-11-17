@@ -104,8 +104,8 @@ pub trait TrustLookup {
 }
 
 /// Decides a job's trust class from its workflow run. Only a push from the
-/// repository itself can be trusted; everything else, including lookup
-/// failures, is untrusted.
+/// repository itself can be trusted, and only a pull request from a fork,
+/// which GitHub runs without repository secrets, can run as untrusted.
 pub fn classify_job(
     lookup: &impl TrustLookup,
     repository: &RepositoryId,
@@ -132,13 +132,13 @@ pub fn classify_job(
             branch,
             pull_request_check: PullRequestCheck::NotNeeded,
         },
-        "pull_request" | "pull_request_target" => JobTrust {
+        "pull_request" if !from_same_repository => JobTrust {
             event: GitHubEventKind::Untrusted,
             pull_request_check: pull_request_check(lookup, repository, &run),
             branch,
         },
         _ => JobTrust {
-            event: GitHubEventKind::Untrusted,
+            event: GitHubEventKind::UntrustedWithSecrets,
             branch,
             pull_request_check: PullRequestCheck::NotNeeded,
         },

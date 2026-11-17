@@ -5,8 +5,12 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitHubEventKind {
-    /// Pull request jobs and every job whose workflow run Runlet could not verify as a push.
+    /// Fork pull request jobs, and jobs whose workflow run Runlet could not verify.
     Untrusted,
+    /// Runs that GitHub gives repository secrets to but Runlet cannot trust, such
+    /// as same-repository pull requests, `pull_request_target`, and manual or
+    /// scheduled runs.
+    UntrustedWithSecrets,
     BranchPush,
     Release,
 }
@@ -121,6 +125,11 @@ pub fn decide(config: &Config, context: &JobContext) -> PolicyDecision {
                 ),
             })
         }
+        GitHubEventKind::UntrustedWithSecrets => PolicyDecision::Deny {
+            reason: "GitHub gives this run repository secrets, and Runlet trusts only pushes to \
+                     trusted branches and tag releases"
+                .to_string(),
+        },
         GitHubEventKind::BranchPush => {
             if !is_trusted_branch(&repository.trusted_branches, &context.branch) {
                 return PolicyDecision::Deny {
@@ -315,6 +324,24 @@ mod tests {
         );
 
         assert!(matches!(decision, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn runs_that_receive_secrets_are_denied_even_with_public_pull_requests_enabled() {
+        let config = configured();
+        let decision = decide(
+            &config,
+            &JobContext {
+                repository: "github:org/project".to_string(),
+                event: GitHubEventKind::UntrustedWithSecrets,
+                branch: "main".to_string(),
+            },
+        );
+
+        let PolicyDecision::Deny { reason } = decision else {
+            panic!("a run that receives secrets must not run as untrusted");
+        };
+        assert!(reason.contains("repository secrets"), "{reason}");
     }
 
     #[test]
