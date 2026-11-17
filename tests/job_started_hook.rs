@@ -26,7 +26,7 @@ fn run_job(allowed_runs: &Path, run_id: &str) -> (ExitStatus, bool) {
     fs::write(
         &worker,
         format!(
-            "#!{bash}\n{bash} --noprofile --norc -e -o pipefail {HOOK} {allowed} 0\n: > {survived}\n",
+            "#!{bash}\n{bash} --noprofile --norc -e -o pipefail {HOOK} {allowed} 0\nstatus=$?\n: > {survived}\nexit $status\n",
             bash = bash().display(),
             allowed = allowed_runs.display(),
             survived = survived.display(),
