@@ -263,11 +263,13 @@ no old jobs remain.
 
 If you deploy without the NixOS module, create equivalent users, subuid/subgid
 ranges, storage roots, size-limited mounts, and UID-based egress firewall rules
-before enabling `runtime.users.enabled = true`. Each runner user also needs a
+before enabling `runtime.users.enabled = true`. Runlet refuses a cache root that
+other host users can enter, so give it mode `0770` or stricter. Each runner user also needs a
 running systemd user manager, for example through `loginctl enable-linger`,
 because rootless Podman enforces job CPU, memory and process limits through it.
-Runlet checks this before it registers a runner and refuses the job with a
-`limits-unenforceable` event when Podman would drop the limits.
+Runlet checks this before it registers a runner and holds the job with a
+`limits-unenforceable` event when Podman would drop the limits. Redeliver the
+`workflow_job` webhook to retry the job once the host is fixed.
 
 The disk limit options `runtime.default_disk` and `runtime.<class>.disk`
 (`services.runlet.runtime.defaultDisk` and `runtime.<class>.disk` in the NixOS
@@ -276,8 +278,11 @@ on any filesystem. Configurations that still set them fail validation. Bound job
 disk use by putting the Podman storage roots on size-limited filesystems.
 
 The NixOS module's default database path moved to
-`/var/lib/runlet/orchestrator/runlet.sqlite3`. Move an existing
-`/var/lib/runlet/runlet.sqlite3` there, or set `state.databasePath` to keep it.
+`/var/lib/runlet/orchestrator/runlet.sqlite3`, because the runner users must be
+able to enter `/var/lib/runlet`. Before switching an existing host, stop
+`runlet-orchestrator` and move `/var/lib/runlet/runlet.sqlite3` to the new path
+with `mv`, which keeps its owner. The module refuses a database path directly in
+`/var/lib/runlet`.
 
 ## CLI
 
@@ -420,7 +425,10 @@ just check
 The check command verifies formatting, clippy, and tests for the Rust code. Use
 `just check-fix` to apply Rust formatting before running clippy and tests.
 
-`nix flake check` also boots a NixOS VM with the module, sends signed webhooks
-for a trusted and an untrusted job to a fake GitHub API, and checks each runner
-container's limits, cache access, network policy and cleanup. It needs KVM.
+`nix flake check` also boots a NixOS VM with the module, sends Runlet signed
+webhooks for a trusted and an untrusted job while it talks to a fake GitHub API,
+and checks each runner container's limits, cache access, network policy and
+cleanup, and that a job is held while its limits can't be enforced. The test
+stops at the launched container, because a real runner can't register offline.
+It needs KVM.
 Run it alone with `nix build -L .#checks.x86_64-linux.nixos`.
