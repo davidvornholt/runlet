@@ -48,7 +48,10 @@ Follow these steps to move a workflow job from GitHub-hosted runners such as
      ```
 
      For unreleased testing, the workflow also publishes a mutable `main` tag.
-     For production, prefer a release tag or digest over `main` or `latest`.
+     For production, prefer a release tag or digest over `main` or `latest`,
+     and move it to a fresh image, such as the current
+     `runner-<actions-runner-version>` tag, whenever GitHub releases a new
+     runner, because runners can't update themselves (see [CLI](#cli)).
      The first publish may require setting the GHCR package visibility to public
      in GitHub's package settings; the publish workflow verifies unauthenticated
      image access and fails if the package remains private.
@@ -350,10 +353,12 @@ and `<release>-runner-<actions-runner-version>`.
 Runners start with automatic updates disabled, because an ephemeral runner
 would otherwise download and install a new runner during its only job. Instead
 the image workflow builds with the latest GitHub Actions runner release and
-rebuilds every week, and Runlet starts each job with `podman run --pull=newer`,
-so hosts pick up the new image. GitHub stops sending jobs to a runner whose
-updates are disabled once it lags a release by 30 days, so an image you pin or
-build yourself must be rebuilt within that time.
+rebuilds the `main` and `latest` tags every week, and Runlet starts each job
+with `podman run --pull=newer`, so hosts on those tags pick up the new image.
+GitHub stops sending jobs to a runner whose updates are disabled once it lags a
+release by 30 days, so a host that pins a release tag or digest, or runs an
+image you build yourself, must move `runtime.runner_image` (`runnerImage` in
+the NixOS module) to a newer image within that time.
 
 GitHub may create new GHCR packages as private. After the first successful image
 push, set the package visibility to public in GitHub's package settings. The
