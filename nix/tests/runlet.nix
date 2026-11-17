@@ -157,7 +157,8 @@ pkgs.testers.runNixOSTest {
             timeout=120,
         )
         assert machine.succeed(podman(user, "ps --all --quiet")).strip() == "", "runner container left behind"
-        assert machine.succeed("ls -A /var/lib/runlet/jobs").strip() == "", "job staging files left behind"
+        # Accepted runs stay recorded in allowed-runs until they are two days old.
+        assert machine.succeed("ls -A /var/lib/runlet/jobs").split() == ["allowed-runs"], "job staging files left behind"
 
 
     def cgroup_limits(user, container):
@@ -185,6 +186,8 @@ pkgs.testers.runNixOSTest {
         limits = cgroup_limits("trusted", container)
         assert limits[:3] == ["200000", "100000", "4294967296"] and limits[4] == "2048", limits
         run_in("trusted", container, "touch /cache/written-by-trusted-job")
+        # The job-started hook finds the run's record and can't add one.
+        run_in("trusted", container, "test -f /etc/runlet/allowed-runs/101 && ! touch /etc/runlet/allowed-runs/1")
         run_in("trusted", container, f"wget -q -T 5 -O- http://{host_ip}:9999/ping")
         run_in("trusted", container, "touch /tmp/release")
         wait_for_cleanup("trusted", 101)
@@ -195,6 +198,8 @@ pkgs.testers.runNixOSTest {
         # 1 CPU, 2G memory with no swap, and the untrusted pids limit.
         assert cgroup_limits("untrusted", container) == ["100000", "100000", "2147483648", "0", "256"]
         run_in("untrusted", container, "test -e /cache/written-by-trusted-job")
+        # Untrusted runners see only untrusted runs' records.
+        run_in("untrusted", container, "test -f /etc/runlet/allowed-runs/102 && ! test -e /etc/runlet/allowed-runs/101")
         run_in("untrusted", container, "! touch /cache/written-by-untrusted-job")
         run_in("untrusted", container, "awk '$2 == \"/\" { print $4 }' /proc/mounts | grep -q '^ro'")
         machine.fail(podman("untrusted", f"exec {container} wget -q -T 5 -O- http://{host_ip}:9999/ping"))

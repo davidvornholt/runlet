@@ -12,7 +12,13 @@
       let
         pkgs = import nixpkgs { inherit system; };
         craneLib = crane.mkLib pkgs;
-        src = craneLib.cleanCargoSource ./.;
+        # The job-started hook tests run the hook script from the runner image.
+        src = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = path: type:
+            craneLib.filterCargoSources path type
+            || pkgs.lib.hasSuffix "/images/actions-runner/job-started.sh" path;
+        };
         commonArgs = {
           inherit src;
           strictDeps = true;
