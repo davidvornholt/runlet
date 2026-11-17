@@ -22,6 +22,7 @@ fn job(trust_class: TrustClass, network: NetworkPolicy) -> PodmanJobSpec {
         secrets: "false".to_string(),
         registry_push: false,
         deploy: false,
+        allowed_runs_dir: "/var/lib/runlet/jobs/allowed-runs/trusted".into(),
     }
 }
 
@@ -61,6 +62,9 @@ fn builds_podman_command_without_shell() {
     assert!(!spec.args.iter().any(|arg| arg == "RUNNER_TOKEN=token"));
     assert!(spec.args.iter().any(|arg| arg == "RUNNER_EPHEMERAL=true"));
     assert!(spec.args.iter().any(|arg| arg == "RUNLET_SECRETS=false"));
+    assert!(spec.args.iter().any(
+        |arg| arg == "/var/lib/runlet/jobs/allowed-runs/trusted:/etc/runlet/allowed-runs:ro,z"
+    ));
 }
 
 #[test]

@@ -1,5 +1,6 @@
 use crate::config::{NetworkPolicy, RuntimeConfig, RuntimeProfileConfig, TrustClass};
 use crate::process::ProcessSpec;
+use crate::runner_binding::CONTAINER_ALLOWED_RUNS_DIR;
 use crate::runtime_config::UNTRUSTED_TMPFS;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
@@ -18,6 +19,8 @@ pub struct PodmanJobSpec {
     pub secrets: String,
     pub registry_push: bool,
     pub deploy: bool,
+    /// Host directory of the runs this runner's trust class accepted.
+    pub allowed_runs_dir: OsString,
 }
 
 pub fn podman_run(runtime: &RuntimeConfig, job: &PodmanJobSpec) -> ProcessSpec {
@@ -80,6 +83,15 @@ pub fn podman_run(runtime: &RuntimeConfig, job: &PodmanJobSpec) -> ProcessSpec {
             ]);
         }
     }
+
+    podman_args.extend([
+        "--volume".into(),
+        format!(
+            "{}:{CONTAINER_ALLOWED_RUNS_DIR}:ro,z",
+            Path::new(&job.allowed_runs_dir).display()
+        )
+        .into(),
+    ]);
 
     if let Some(cache_mount) = &job.cache_mount {
         let suffix = if job.cache_writable { "Z" } else { "ro,Z" };

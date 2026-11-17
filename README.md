@@ -186,6 +186,15 @@ workflow-risk paths. If Runlet cannot verify the run or cannot match a pull
 request run to an open pull request, it denies the job instead of skipping that
 check. Redeliver the `workflow_job` webhook to retry after fixing the cause.
 
+GitHub gives a queued job to any idle runner whose labels match, not to the
+runner Runlet started for it. So Runlet records each run it accepts for each
+trust class, and the runner image's job-started hook stops any job whose run
+isn't recorded for its runner's class, before the job's first step. A denied
+job therefore never runs on a runner Runlet started for another job. When a
+runner finishes another job while its own job still waits, Runlet starts a new
+runner for that job, up to three times. If an allowed job takes a runner of the
+other trust class, the hook stops it as well; re-run that job.
+
 ## NixOS module
 
 ```nix
@@ -378,8 +387,11 @@ podman build \
 podman push ghcr.io/org/runlet-actions-runner:custom
 ```
 
-The configured runner image must contain the `runlet-runner-entrypoint` binary
-and the GitHub Actions runner installation. `RUNNER_STATE_DIR` must not contain
+The configured runner image must contain the `runlet-runner-entrypoint` binary,
+the GitHub Actions runner installation, and the job-started hook from
+`images/actions-runner/job-started.sh`, set as
+`ACTIONS_RUNNER_HOOK_JOB_STARTED`. Without the hook, jobs Runlet denied can run
+on runners it started for other jobs. `RUNNER_STATE_DIR` must not contain
 `RUNNER_DIR` or be inside it: the entrypoint rejects either overlap before clearing
 the state directory. Paths resolving to the same directory use the installation
 in place.

@@ -3,6 +3,7 @@ use crate::orchestrator::{Orchestrator, OrchestratorError};
 use crate::orchestrator_files::runner_token_env_path;
 use crate::podman::{podman_remove_container, podman_scoped_prune, PodmanPruneResource};
 use crate::process::run;
+use crate::runner_binding::{prune_allowed_runs, ALLOWED_RUN_MAX_AGE};
 use crate::state::{JobStatus, Store};
 use std::fs;
 use std::path::Path;
@@ -30,6 +31,10 @@ impl Orchestrator {
                 tracing::warn!(%error, job_id = %job.job_id, "cleanup failed");
                 first_error.get_or_insert(error);
             }
+        }
+        if let Err(error) = prune_allowed_runs(&self.config.runtime.jobs_dir, ALLOWED_RUN_MAX_AGE) {
+            tracing::warn!(%error, "failed to prune accepted workflow runs");
+            first_error.get_or_insert_with(|| error.into());
         }
         if self.config.runtime.cleanup.enable_scoped_prune {
             for resource in self.scoped_prune_resources() {

@@ -48,7 +48,12 @@ RUN case "${TARGETARCH}" in \
 
 USER root
 COPY --from=builder /out/runlet-runner-entrypoint /usr/local/bin/runlet-runner-entrypoint
-RUN chmod 0755 /usr/local/bin/runlet-runner-entrypoint
+COPY images/actions-runner/job-started.sh /usr/local/lib/runlet/job-started.sh
+RUN chmod 0755 /usr/local/bin/runlet-runner-entrypoint /usr/local/lib/runlet/job-started.sh \
+    && mkdir -p /etc/runlet/allowed-runs
 USER runner
+
+# Fails every job whose workflow run Runlet didn't accept for this runner.
+ENV ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/lib/runlet/job-started.sh
 
 ENTRYPOINT ["/usr/local/bin/runlet-runner-entrypoint"]

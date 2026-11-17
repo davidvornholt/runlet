@@ -1,25 +1,20 @@
-use crate::cache::prepare_cache_mount;
 use crate::concurrency::ConcurrencyLimiter;
 use crate::config::{Config, TrustClass};
 use crate::duration::parse_duration;
 use crate::github::{GitHubClient, RepositoryId};
 use crate::job_trust::{classify_job, JobTrust};
-use crate::orchestrator_files::{
-    abort_claimed_job, read_secret, runner_token_env_path, write_runner_token_env,
-};
-use crate::podman::{podman_run, PodmanJobSpec};
+use crate::orchestrator_files::{abort_claimed_job, read_secret};
+use crate::orchestrator_runner::RunnerLaunch;
 use crate::podman_limits::check_limits_enforceable;
 use crate::policy::{
     decide, validate_capability_labels, GitHubEventKind, JobContext, PolicyDecision,
     PolicyViolation,
 };
-use crate::process::{run_with_timeout, RunOutcome};
+use crate::runner_binding::{allow_run, MAX_REPLACEMENT_RUNNERS};
 use crate::state::{JobRecord, JobStatus, Store};
 use crate::webhook::JobRequest;
 use crate::webhook_server::serve_webhooks;
 use crate::workflow_risk::{workflow_risk_decision, WorkflowRiskDecision};
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -197,6 +192,15 @@ impl Orchestrator {
         let pull_request_numbers = pull_request_check
             .pull_request_numbers()
             .map_err(OrchestratorError::PolicyDenied)?;
+        if policy.trust_class == TrustClass::Trusted {
+            // Record trusted runs before waiting for a slot, so a trusted job
+            // that takes an idle runner from a full pool isn't failed.
+            allow_run(
+                &self.config.runtime.jobs_dir,
+                policy.trust_class,
+                request.run_id,
+            )?;
+        }
         let Some(_permit) = self.concurrency.try_acquire(policy.trust_class) else {
             return Err(OrchestratorError::ConcurrencyBusy);
         };
@@ -318,108 +322,48 @@ impl Orchestrator {
             return Err(OrchestratorError::LimitsUnenforceable(reason));
         }
 
-        let registration_token = match self.github.create_registration_token(&repository) {
-            Ok(token) => token,
-            Err(error) => {
-                abort_claimed_job(&store, &job_id, &workspace)?;
-                return Err(error.into());
-            }
-        };
-        if let Err(error) = fs::create_dir_all(&workspace)
-            .and_then(|()| fs::set_permissions(&workspace, fs::Permissions::from_mode(0o770)))
-        {
-            abort_claimed_job(&store, &job_id, &workspace)?;
-            return Err(error.into());
-        }
-        let token_env_file = runner_token_env_path(&workspace);
-        if let Err(error) = write_runner_token_env(&token_env_file, &registration_token.token) {
-            abort_claimed_job(&store, &job_id, &workspace)?;
-            return Err(error.into());
-        }
-        let cache_mount = match prepare_cache_mount(
-            &self.config.cache,
-            &request.repository,
-            policy.cache_write,
+        if let Err(error) = allow_run(
+            &self.config.runtime.jobs_dir,
+            policy.trust_class,
+            request.run_id,
         ) {
-            Ok(mount) => mount,
-            Err(error) => {
-                abort_claimed_job(&store, &job_id, &workspace)?;
-                return Err(error.into());
-            }
-        };
+            abort_claimed_job(&store, &job_id, &workspace)?;
+            return Err(error.into());
+        }
 
-        if let Err(error) = store.record_runner_registration(
-            &runner_name,
-            &request.repository,
-            &registration_token.expires_at,
-        ) {
-            abort_claimed_job(&store, &job_id, &workspace)?;
-            return Err(error.into());
-        }
-        if let Some(mount) = &cache_mount {
-            store.upsert_cache_entry(
-                &mount.namespace,
-                "default",
-                &request.repository,
-                event != GitHubEventKind::Untrusted,
+        let runner = RunnerLaunch {
+            store: &store,
+            repository: &repository,
+            request: &request,
+            policy: &policy,
+            event,
+            job_id: &job_id,
+            runner_name: &runner_name,
+            workspace: &workspace,
+        };
+        // A runner that ends while its job still waits in GitHub's queue ran
+        // another job or none, so start another one, up to a limit.
+        for replacement in 1..=MAX_REPLACEMENT_RUNNERS {
+            self.run_runner(&runner)?;
+            let job_is_queued = self
+                .github
+                .workflow_job_is_queued(&repository, request.github_job_id)
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, %job_id, "could not check whether the job still waits for a runner");
+                    false
+                });
+            if !job_is_queued {
+                return Ok(());
+            }
+            tracing::info!(%job_id, github_job_id = request.github_job_id, replacement, "the job still waits for a runner; starting a replacement");
+            store.append_event(
+                &job_id,
+                "replacing",
+                "the job still waits for a runner, so runlet starts a new one",
             )?;
         }
-        store.set_job_status(&job_id, JobStatus::Running)?;
-
-        let process = podman_run(
-            &self.config.runtime,
-            &PodmanJobSpec {
-                job_id: job_id.clone(),
-                runner_name: runner_name.clone(),
-                repo_url: request.repo_url,
-                token_env_file: token_env_file.into_os_string(),
-                labels: request.labels,
-                secrets: policy.secrets.to_string(),
-                registry_push: policy.registry_push,
-                deploy: policy.deploy,
-                trust_class: policy.trust_class,
-                network: policy.network.clone(),
-                cache_mount: cache_mount
-                    .as_ref()
-                    .map(|mount| mount.path.as_os_str().to_os_string()),
-                cache_writable: policy.cache_write,
-            },
-        );
-        let timeout = parse_duration(&policy.timeout)?;
-        let capture_stdout = policy.trust_class == TrustClass::Trusted;
-        let outcome = match run_with_timeout(process.command(), timeout, capture_stdout) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                store.set_job_status(&job_id, JobStatus::Failed)?;
-                store.append_event(
-                    &job_id,
-                    "failed",
-                    &format!("failed to run runner container: {error}"),
-                )?;
-                self.cleanup_job(&store, &repository, &job_id, &runner_name, &workspace)?;
-                return Err(error.into());
-            }
-        };
-        match outcome {
-            RunOutcome::Exited(status) if status.success() => {
-                store.set_job_status(&job_id, JobStatus::Succeeded)?;
-                store.append_event(&job_id, "succeeded", "runner container exited successfully")?;
-            }
-            RunOutcome::Exited(status) => {
-                store.set_job_status(&job_id, JobStatus::Failed)?;
-                store.append_event(
-                    &job_id,
-                    "failed",
-                    &format!("runner container exited with {status}"),
-                )?;
-            }
-            RunOutcome::TimedOut => {
-                store.set_job_status(&job_id, JobStatus::Failed)?;
-                store.append_event(&job_id, "timeout", "runner container exceeded timeout")?;
-            }
-        }
-
-        self.cleanup_job(&store, &repository, &job_id, &runner_name, &workspace)
+        self.run_runner(&runner)?;
+        Ok(())
     }
 }
 
