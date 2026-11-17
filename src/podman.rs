@@ -28,10 +28,6 @@ pub fn podman_run(runtime: &RuntimeConfig, job: &PodmanJobSpec) -> ProcessSpec {
         .as_ref()
         .unwrap_or(&runtime.default_memory)
         .clone();
-    let disk = format!(
-        "size={}",
-        profile.disk.as_ref().unwrap_or(&runtime.default_disk)
-    );
     let network = match job.network {
         NetworkPolicy::Strict | NetworkPolicy::Restricted => {
             "slirp4netns:allow_host_loopback=false"
@@ -53,8 +49,6 @@ pub fn podman_run(runtime: &RuntimeConfig, job: &PodmanJobSpec) -> ProcessSpec {
         cpus.into(),
         "--memory".into(),
         memory.clone().into(),
-        "--storage-opt".into(),
-        disk.into(),
         "--network".into(),
         network.into(),
         "--security-opt".into(),
@@ -112,7 +106,12 @@ pub fn podman_run(runtime: &RuntimeConfig, job: &PodmanJobSpec) -> ProcessSpec {
         runtime.runner_image.clone().into(),
     ]);
 
-    if let Some(user) = runtime.execution_user(job.trust_class) {
+    as_execution_user(runtime.execution_user(job.trust_class), podman_args)
+}
+
+/// Runs Podman directly, or through sudo as the job's execution user.
+pub(crate) fn as_execution_user(user: Option<&str>, podman_args: Vec<OsString>) -> ProcessSpec {
+    if let Some(user) = user {
         let mut args: Vec<OsString> = vec![
             "-n".into(),
             "-u".into(),
@@ -196,25 +195,7 @@ pub fn podman_scoped_prune(user: Option<&str>, resource: PodmanPruneResource) ->
         "--filter".into(),
         "label=runlet.managed=true".into(),
     ];
-    if let Some(user) = user {
-        let mut args: Vec<OsString> = vec![
-            "-n".into(),
-            "-u".into(),
-            user.into(),
-            "--".into(),
-            "podman".into(),
-        ];
-        args.extend(podman_args);
-        ProcessSpec {
-            program: OsString::from("sudo"),
-            args,
-        }
-    } else {
-        ProcessSpec {
-            program: OsString::from("podman"),
-            args: podman_args,
-        }
-    }
+    as_execution_user(user, podman_args)
 }
 
 pub fn podman_remove_container(user: Option<&str>, job_id: impl AsRef<OsStr>) -> ProcessSpec {
@@ -224,25 +205,7 @@ pub fn podman_remove_container(user: Option<&str>, job_id: impl AsRef<OsStr>) ->
         "--ignore".into(),
         format!("runlet-{}", job_id.as_ref().to_string_lossy()).into(),
     ];
-    if let Some(user) = user {
-        let mut args: Vec<OsString> = vec![
-            "-n".into(),
-            "-u".into(),
-            user.into(),
-            "--".into(),
-            "podman".into(),
-        ];
-        args.extend(podman_args);
-        ProcessSpec {
-            program: OsString::from("sudo"),
-            args,
-        }
-    } else {
-        ProcessSpec {
-            program: OsString::from("podman"),
-            args: podman_args,
-        }
-    }
+    as_execution_user(user, podman_args)
 }
 
 #[cfg(test)]

@@ -44,6 +44,8 @@
             partitionType = "count";
           });
           fmt = craneLib.cargoFmt { inherit src; };
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          nixos = import ./nix/tests/runlet.nix { inherit pkgs self; };
         };
 
         devShells.default = pkgs.mkShell {

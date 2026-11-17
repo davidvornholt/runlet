@@ -8,6 +8,7 @@ use crate::orchestrator_files::{
     abort_claimed_job, read_secret, runner_token_env_path, write_runner_token_env,
 };
 use crate::podman::{podman_run, PodmanJobSpec};
+use crate::podman_limits::check_limits_enforceable;
 use crate::policy::{
     decide, validate_capability_labels, GitHubEventKind, JobContext, PolicyDecision,
     PolicyViolation,
@@ -41,6 +42,8 @@ pub enum OrchestratorError {
     Duration(#[from] crate::duration::DurationParseError),
     #[error("cache error: {0}")]
     Cache(#[from] crate::cache::CacheError),
+    #[error("refused job: {0}")]
+    LimitsUnenforceable(String),
     #[error("cleanup command failed: {0}")]
     CleanupCommandFailed(String),
     #[error("job concurrency limit is currently full")]
@@ -306,6 +309,13 @@ impl Orchestrator {
                     }
                 }
             }
+        }
+
+        if let Err(reason) = check_limits_enforceable(&self.config.runtime, policy.trust_class) {
+            // Held, so that redelivering the webhook retries once the host is fixed.
+            store.set_job_status(&job_id, JobStatus::Held)?;
+            store.append_event(&job_id, "limits-unenforceable", &reason)?;
+            return Err(OrchestratorError::LimitsUnenforceable(reason));
         }
 
         let registration_token = match self.github.create_registration_token(&repository) {

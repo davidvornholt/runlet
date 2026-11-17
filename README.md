@@ -17,24 +17,18 @@ The current implementation provides the Runlet appliance foundation:
 
 ## Quick start
 
-Build or enter a development shell with Nix:
+Build Runlet with Nix and print a starter TOML configuration:
 
 ```bash
 nix build .#runlet
-nix develop
+./result/bin/runlet print-default-config > config.example.toml
 ```
 
 Without Nix, use the Rust toolchain directly:
 
 ```bash
 cargo build --release
-cargo test --all-features
-```
-
-Print a starter TOML configuration:
-
-```bash
-runlet print-default-config > config.example.toml
+./target/release/runlet print-default-config > config.example.toml
 ```
 
 For a deployment, continue with [Use Runlet in GitHub Actions](#use-runlet-in-github-actions).
@@ -208,7 +202,6 @@ check. Redeliver the `workflow_job` webhook to retry after fixing the cause.
       maxConcurrentJobs = 4;
       defaultCpu = 2;
       defaultMemory = "4G";
-      defaultDisk = "20G";
       defaultTimeout = "20m";
       runnerImage = "ghcr.io/davidvornholt/runlet-actions-runner:0.1.0";
 
@@ -269,8 +262,27 @@ prune old rootless Podman state from the former `runlet` user after confirming
 no old jobs remain.
 
 If you deploy without the NixOS module, create equivalent users, subuid/subgid
-ranges, storage roots, quota-limited mounts, and UID-based egress firewall rules
-before enabling `runtime.users.enabled = true`.
+ranges, storage roots, size-limited mounts, and UID-based egress firewall rules
+before enabling `runtime.users.enabled = true`. Runlet refuses a cache root that
+other host users can enter, so give it mode `0770` or stricter. Each runner user also needs a
+running systemd user manager, for example through `loginctl enable-linger`,
+because rootless Podman enforces job CPU, memory and process limits through it.
+Runlet checks this before it registers a runner and holds the job with a
+`limits-unenforceable` event when Podman would drop the limits. Redeliver the
+`workflow_job` webhook to retry the job once the host is fixed.
+
+The disk limit options `runtime.default_disk` and `runtime.<class>.disk`
+(`services.runlet.runtime.defaultDisk` and `runtime.<class>.disk` in the NixOS
+module) are removed, because rootless Podman can't limit a container's disk use
+on any filesystem. Configurations that still set them fail validation. Bound job
+disk use by putting the Podman storage roots on size-limited filesystems.
+
+The NixOS module's default database path moved to
+`/var/lib/runlet/orchestrator/runlet.sqlite3`, because the runner users must be
+able to enter `/var/lib/runlet`. Before switching an existing host, stop
+`runlet-orchestrator` and move `/var/lib/runlet/runlet.sqlite3` to the new path
+with `mv`, which keeps its owner. The module refuses a database path directly in
+`/var/lib/runlet`.
 
 ## CLI
 
@@ -284,8 +296,10 @@ runlet print-default-config
 
 Runlet stores only orchestration metadata in SQLite. Job host staging data,
 runner tokens, and containers are treated as ephemeral data and are expected to
-be removed during cleanup. Runner work directories stay container-local so the
-configured Podman storage limit applies.
+be removed during cleanup. Runner work directories stay container-local, so
+the filesystem that holds the execution user's Podman storage root bounds them.
+Untrusted jobs get a read-only root filesystem, and their writable `/tmp` and
+`/run` are memory-backed, so their memory limit bounds them.
 
 Public pull request jobs always use the `strict` network policy. In the
 NixOS module this combines rootless Podman networking without host loopback with
@@ -367,9 +381,10 @@ in place.
   installs nftables rules keyed to the untrusted execution UID; on other systems
   deploy equivalent nftables/iptables rules before accepting public pull
   requests.
-- Mount `runtime.storage.trustedStorageRoot`,
+- Runlet has no per-job disk limit, because rootless Podman can't enforce one.
+  Mount `runtime.storage.trustedStorageRoot`,
   `runtime.storage.untrustedStorageRoot`, and the cache path on separate
-  quota-limited filesystems to prevent CI images, layers, logs, caches, or
+  size-limited filesystems to prevent CI images, layers, logs, caches, or
   cleanup failures from filling production storage.
 - Workflow definitions, local composite actions, `action.yml`/`action.yaml`, and
   configured build scripts are high risk. Public pull requests that change those
@@ -386,8 +401,11 @@ in place.
   that denies `keyctl`, `bpf`, and `perf_event_open` families.
 - The NixOS service runs as `runlet-orchestrator` and enables compatible
   systemd hardening including `PrivateTmp`, `ProtectSystem=strict`,
-  `ProtectHome`, kernel protection options, and
-  `LockPersonality`. `NoNewPrivileges` and `RestrictSUIDSGID` are intentionally
+  inaccessible `/home` and `/root`, `ProtectKernelModules`, and
+  `LockPersonality`. `ProtectHome`, `ProtectControlGroups`, and
+  `ProtectKernelTunables` are omitted because Podman needs `/run/user` to reach
+  the runner users' systemd managers, and crun needs to create the job's cgroup
+  and mount `/proc`. `NoNewPrivileges` and `RestrictSUIDSGID` are intentionally
   omitted because the orchestrator uses narrow sudo rules to hand Podman
   execution to the trusted and untrusted users.
   `PrivateDevices` is also omitted because rootless Podman networking and
@@ -400,8 +418,17 @@ in place.
 ## Development
 
 ```bash
+nix develop
 just check
 ```
 
 The check command verifies formatting, clippy, and tests for the Rust code. Use
 `just check-fix` to apply Rust formatting before running clippy and tests.
+
+`nix flake check` also boots a NixOS VM with the module, sends Runlet signed
+webhooks for a trusted and an untrusted job while it talks to a fake GitHub API,
+and checks each runner container's limits, cache access, network policy and
+cleanup, and that a job is held while its limits can't be enforced. The test
+stops at the launched container, because a real runner can't register offline.
+It needs KVM.
+Run it alone with `nix build -L .#checks.x86_64-linux.nixos`.

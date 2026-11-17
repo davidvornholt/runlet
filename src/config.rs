@@ -29,8 +29,10 @@ pub enum ConfigError {
     InvalidCpu,
     #[error("runtime.default_memory must not be empty")]
     InvalidMemory,
-    #[error("runtime.default_disk must not be empty")]
-    InvalidDisk,
+    #[error(
+        "{field} is not supported: rootless Podman can't limit a container's disk use; put the Podman storage roots on size-limited filesystems instead"
+    )]
+    UnsupportedDiskLimit { field: String },
     #[error("runtime.default_timeout must not be empty")]
     InvalidTimeout,
     #[error("runtime.runner_image must not be empty")]
@@ -120,8 +122,10 @@ impl Config {
         if self.runtime.default_memory.is_empty() {
             return Err(ConfigError::InvalidMemory);
         }
-        if self.runtime.default_disk.is_empty() {
-            return Err(ConfigError::InvalidDisk);
+        if self.runtime.default_disk.is_some() {
+            return Err(ConfigError::UnsupportedDiskLimit {
+                field: "runtime.default_disk".to_string(),
+            });
         }
         if self.runtime.default_timeout.is_empty() {
             return Err(ConfigError::InvalidTimeout);
@@ -202,6 +206,11 @@ fn validate_profile(
             });
         }
     }
+    if profile.disk.is_some() {
+        return Err(ConfigError::UnsupportedDiskLimit {
+            field: format!("runtime.{profile_name}.disk"),
+        });
+    }
     if let Some(value) = profile.pids_limit {
         if value == 0 {
             return Err(ConfigError::InvalidProfileLimit {
@@ -212,7 +221,6 @@ fn validate_profile(
     }
     for (field, value) in [
         ("memory", profile.memory.as_deref()),
-        ("disk", profile.disk.as_deref()),
         ("timeout", profile.timeout.as_deref()),
         ("ulimit_nofile", profile.ulimit_nofile.as_deref()),
         ("ulimit_nproc", profile.ulimit_nproc.as_deref()),

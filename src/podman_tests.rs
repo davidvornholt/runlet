@@ -41,7 +41,7 @@ fn builds_podman_command_without_shell() {
         .args
         .iter()
         .any(|arg| arg == "slirp4netns:allow_host_loopback=false"));
-    assert!(spec.args.iter().any(|arg| arg == "size=20G"));
+    assert!(!spec.args.iter().any(|arg| arg == "--storage-opt"));
     assert!(!spec
         .args
         .iter()
