@@ -24,13 +24,17 @@ pub(crate) struct RunnerLaunch<'a> {
     pub policy: &'a EffectivePolicy,
     pub event: GitHubEventKind,
     pub job_id: &'a str,
-    pub runner_name: &'a str,
     pub workspace: &'a Path,
 }
 
 impl Orchestrator {
-    /// Registers and runs one runner container, then cleans it up.
-    pub(crate) fn run_runner(&self, launch: &RunnerLaunch<'_>) -> Result<(), OrchestratorError> {
+    /// Registers and runs one runner container named `runner_name`, then cleans
+    /// it up.
+    pub(crate) fn run_runner(
+        &self,
+        launch: &RunnerLaunch<'_>,
+        runner_name: &str,
+    ) -> Result<(), OrchestratorError> {
         let RunnerLaunch {
             store,
             repository,
@@ -38,7 +42,6 @@ impl Orchestrator {
             policy,
             event,
             job_id,
-            runner_name,
             workspace,
         } = *launch;
         let registration_token = match self.github.create_registration_token(repository) {

@@ -207,7 +207,7 @@ impl Orchestrator {
         let repository = RepositoryId::parse(&request.repository)?;
         let store = Store::open(&self.config.state.database_path)?;
         let job_id = format!("{}-{}", request.github_job_id, Uuid::new_v4());
-        let runner_name = format!("runlet-{job_id}");
+        let mut runner_name = format!("runlet-{job_id}");
         let container_name = format!("runlet-{job_id}");
         let workspace = self.config.runtime.jobs_dir.join(&job_id);
         if let Err(error) = store.upsert_job(&JobRecord {
@@ -338,13 +338,12 @@ impl Orchestrator {
             policy: &policy,
             event,
             job_id: &job_id,
-            runner_name: &runner_name,
             workspace: &workspace,
         };
         // A runner that ends while its job still waits in GitHub's queue ran
         // another job or none, so start another one, up to a limit.
         for replacement in 1..=MAX_REPLACEMENT_RUNNERS {
-            self.run_runner(&runner)?;
+            self.run_runner(&runner, &runner_name)?;
             let job_is_queued = self
                 .github
                 .workflow_job_is_queued(&repository, request.github_job_id)
@@ -361,8 +360,12 @@ impl Orchestrator {
                 "replacing",
                 "the job still waits for a runner, so runlet starts a new one",
             )?;
+            // GitHub removes an ephemeral runner's registration once the job it
+            // took ends, and a runner that reuses the name would go with it.
+            runner_name = format!("runlet-{job_id}-{replacement}");
+            store.set_job_runner_name(&job_id, &runner_name)?;
         }
-        self.run_runner(&runner)?;
+        self.run_runner(&runner, &runner_name)?;
         Ok(())
     }
 }
