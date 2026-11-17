@@ -18,6 +18,7 @@ use crate::workflow_risk::{workflow_risk_decision, WorkflowRiskDecision};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -281,7 +282,10 @@ impl Orchestrator {
             return Err(error.into());
         }
 
+        // Waiting jobs hold no database connection.
+        drop(store);
         let _permit = self.concurrency.acquire(policy.trust_class);
+        let store = Store::open(&self.config.state.database_path)?;
         let runner = RunnerLaunch {
             store: &store,
             repository: &repository,
@@ -292,13 +296,15 @@ impl Orchestrator {
             workspace: &workspace,
         };
         // A runner that exits cleanly ran a job. While GitHub still queues this
-        // one, that was another job, so start a new runner. Each such job is
-        // gone once it ran, so this ends.
-        let mut replacement = 0;
+        // one, that was another job, so start a new runner. A runner that
+        // exits cleanly without a job would repeat, so wait longer each time;
+        // GitHub cancels a job that stays queued for a day, which ends this.
+        let mut replacement: u32 = 0;
         loop {
             if !self.run_runner(&runner, &runner_name)? {
                 return Ok(());
             }
+            thread::sleep(Duration::from_secs(2u64.pow(replacement.min(8))));
             let job_is_queued = self
                 .github
                 .workflow_job_is_queued(&repository, request.github_job_id)
