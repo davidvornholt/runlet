@@ -2,14 +2,32 @@
 
 Run 101 is a push to main (trusted); every other run is a pull request from
 the repository itself (untrusted) whose only changed file is src/lib.rs.
+The runners list holds the names in the runners file, one per line, each with
+its line number as its ID.
 """
 
 import http.server
 import json
 import sys
+import urllib.parse
 
 LOG = sys.argv[1]
+RUNNERS = sys.argv[2]
 REPOSITORY = {"id": 1, "owner": {"login": "org"}}
+
+
+def runners():
+    try:
+        with open(RUNNERS) as file:
+            names = file.read().split()
+    except FileNotFoundError:
+        names = []
+    return [{"id": index + 1, "name": name} for index, name in enumerate(names)]
+
+
+def first_page(path):
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+    return query.get("page", ["1"]) == ["1"]
 
 
 def response(method, path):
@@ -33,9 +51,12 @@ def response(method, path):
     if path.startswith("/repos/org/project/pulls?"):
         return [{"number": 9, "head": {"sha": "fixture-commit", "repo": {"id": 1}}}]
     if path.startswith("/repos/org/project/pulls/9/files?"):
-        return [{"filename": "src/lib.rs"}] if "page=1" in path else []
+        return [{"filename": "src/lib.rs"}] if first_page(path) else []
     if path.startswith("/repos/org/project/actions/runners?"):
-        return {"total_count": 0, "runners": []}
+        listed = runners() if first_page(path) else []
+        return {"total_count": len(listed), "runners": listed}
+    if method == "DELETE" and path.startswith("/repos/org/project/actions/runners/"):
+        return {}
     return None
 
 

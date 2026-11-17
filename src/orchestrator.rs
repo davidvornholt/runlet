@@ -312,7 +312,8 @@ impl Orchestrator {
         }
 
         if let Err(reason) = check_limits_enforceable(&self.config.runtime, policy.trust_class) {
-            store.set_job_status(&job_id, JobStatus::Failed)?;
+            // Held, so that redelivering the webhook retries once the host is fixed.
+            store.set_job_status(&job_id, JobStatus::Held)?;
             store.append_event(&job_id, "limits-unenforceable", &reason)?;
             return Err(OrchestratorError::LimitsUnenforceable(reason));
         }

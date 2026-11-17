@@ -51,7 +51,7 @@ pkgs.testers.runNixOSTest {
       before = [ "runlet-orchestrator.service" ];
       serviceConfig = {
         StateDirectory = "fake-github";
-        ExecStart = "${pkgs.python3}/bin/python3 ${./fake-github.py} /var/lib/fake-github/requests.log";
+        ExecStart = "${pkgs.python3}/bin/python3 ${./fake-github.py} /var/lib/fake-github/requests.log /var/lib/fake-github/runners";
       };
     };
 
@@ -110,6 +110,7 @@ pkgs.testers.runNixOSTest {
     host_ip = "${nodes.machine.networking.primaryIPAddress}"
     database = "/var/lib/runlet/orchestrator/runlet.sqlite3"
     api_log = "/var/lib/fake-github/requests.log"
+    api_runners = "/var/lib/fake-github/runners"
 
 
     def send_job(job_id):
@@ -135,7 +136,11 @@ pkgs.testers.runNixOSTest {
     def wait_for_container(user, job_id):
         names = podman(user, "ps --format '{{.Names}}'")
         machine.wait_until_succeeds(f"{names} | grep '^runlet-{job_id}-'", timeout=120)
-        return machine.succeed(f"{names} | grep '^runlet-{job_id}-'").strip()
+        container = machine.succeed(f"{names} | grep '^runlet-{job_id}-'").strip()
+        # The runner registers under the container's name, so list it on the
+        # fake GitHub API for Runlet to find and delete during cleanup.
+        machine.succeed(f"echo {container} >> {api_runners}")
+        return container
 
 
     def run_in(user, container, script):
@@ -196,12 +201,13 @@ pkgs.testers.runNixOSTest {
         run_in("untrusted", container, "touch /tmp/release")
         wait_for_cleanup("untrusted", 102)
 
-    with subtest("Runlet registered and removed a runner for each job through the GitHub API"):
+    with subtest("Runlet requested a registration token for each job and deleted each runner during cleanup"):
         requests = machine.succeed(f"cat {api_log}")
         assert requests.count("/actions/runners/registration-token") == 2, requests
-        assert "GET /repos/org/project/actions/runners?" in requests, requests
+        assert "DELETE /repos/org/project/actions/runners/1\n" in requests, requests
+        assert "DELETE /repos/org/project/actions/runners/2\n" in requests, requests
 
-    with subtest("A job is refused before registration when Podman would drop its limits"):
+    with subtest("A job is held before registration when Podman would drop its limits, and redelivery retries it"):
         uid = machine.succeed("id -u runlet-untrusted").strip()
         machine.succeed("loginctl disable-linger runlet-untrusted")
         machine.wait_until_succeeds(f"test ! -e /run/user/{uid}")
@@ -218,5 +224,15 @@ pkgs.testers.runNixOSTest {
         print(sql(refusal))
         # No registration token means no runner and no container for this job.
         assert machine.succeed(f"cat {api_log}").count("/actions/runners/registration-token") == 2
+        assert sql("select status from jobs where github_job_id = 103") == "held"
+
+        machine.succeed("loginctl enable-linger runlet-untrusted")
+        machine.wait_for_unit(f"user@{uid}.service")
+        send_job(103)
+        container = wait_for_container("untrusted", 103)
+        assert cgroup_limits("untrusted", container) == ["100000", "100000", "2147483648", "0", "256"]
+        run_in("untrusted", container, "touch /tmp/release")
+        wait_for_cleanup("untrusted", 103)
+        assert "DELETE /repos/org/project/actions/runners/3\n" in machine.succeed(f"cat {api_log}")
   '';
 }
