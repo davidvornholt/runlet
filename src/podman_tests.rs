@@ -37,6 +37,7 @@ fn builds_podman_command_without_shell() {
     assert_eq!(spec.program, "podman");
     assert_eq!(spec.args[0], "run");
     assert!(spec.args.iter().any(|arg| arg == "--rm"));
+    assert!(spec.args.iter().any(|arg| arg == "--pull=newer"));
     assert!(spec
         .args
         .iter()

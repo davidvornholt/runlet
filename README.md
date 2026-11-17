@@ -347,6 +347,14 @@ multi-architecture runner image at
 versions, `sha-<commit>`, `main`, `latest`, `runner-<actions-runner-version>`,
 and `<release>-runner-<actions-runner-version>`.
 
+Runners start with automatic updates disabled, because an ephemeral runner
+would otherwise download and install a new runner during its only job. Instead
+the image workflow builds with the latest GitHub Actions runner release and
+rebuilds every week, and Runlet starts each job with `podman run --pull=newer`,
+so hosts pick up the new image. GitHub stops sending jobs to a runner whose
+updates are disabled once it lags a release by 30 days, so an image you pin or
+build yourself must be rebuilt within that time.
+
 GitHub may create new GHCR packages as private. After the first successful image
 push, set the package visibility to public in GitHub's package settings. The
 image workflow verifies unauthenticated access after publishing and fails if the
@@ -359,7 +367,7 @@ so the recipe can compile `runlet-runner-entrypoint`:
 ```bash
 podman build \
   --file images/actions-runner/Containerfile \
-  --build-arg RUNNER_VERSION=2.337.0 \
+  --build-arg RUNNER_VERSION=2.338.2 \
   --tag ghcr.io/org/runlet-actions-runner:custom \
   .
 podman push ghcr.io/org/runlet-actions-runner:custom
