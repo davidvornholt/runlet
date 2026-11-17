@@ -1,7 +1,7 @@
 """Answers the GitHub API calls Runlet makes for the VM test's jobs.
 
 Run 101 is a push to main (trusted); every other run is a pull request from
-the repository itself (untrusted) whose only changed file is src/lib.rs.
+a fork (untrusted) whose only changed file is src/lib.rs.
 The runners list holds the names in the runners file, one per line, each with
 its line number as its ID.
 """
@@ -14,6 +14,7 @@ import urllib.parse
 LOG = sys.argv[1]
 RUNNERS = sys.argv[2]
 REPOSITORY = {"id": 1, "owner": {"login": "org"}}
+FORK = {"id": 2, "owner": {"login": "contributor"}}
 
 
 def runners():
@@ -46,10 +47,10 @@ def response(method, path):
             "head_branch": "main" if push else "feature",
             "head_sha": "fixture-commit",
             "repository": REPOSITORY,
-            "head_repository": REPOSITORY,
+            "head_repository": REPOSITORY if push else FORK,
         }
     if path.startswith("/repos/org/project/pulls?"):
-        return [{"number": 9, "head": {"sha": "fixture-commit", "repo": {"id": 1}}}]
+        return [{"number": 9, "head": {"sha": "fixture-commit", "repo": {"id": 2}}}]
     if path.startswith("/repos/org/project/pulls/9/files?"):
         return [{"filename": "src/lib.rs"}] if first_page(path) else []
     if path.startswith("/repos/org/project/actions/runners?"):
