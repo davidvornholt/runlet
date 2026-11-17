@@ -29,12 +29,13 @@ pub(crate) struct RunnerLaunch<'a> {
 
 impl Orchestrator {
     /// Registers and runs one runner container named `runner_name`, then cleans
-    /// it up.
+    /// it up. Returns whether the runner exited cleanly, which it does after
+    /// the one job it takes.
     pub(crate) fn run_runner(
         &self,
         launch: &RunnerLaunch<'_>,
         runner_name: &str,
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<bool, OrchestratorError> {
         let RunnerLaunch {
             store,
             repository,
@@ -131,6 +132,7 @@ impl Orchestrator {
                 return Err(error.into());
             }
         };
+        let exited_cleanly = matches!(outcome, RunOutcome::Exited(status) if status.success());
         match outcome {
             RunOutcome::Exited(status) if status.success() => {
                 store.set_job_status(job_id, JobStatus::Succeeded)?;
@@ -151,6 +153,6 @@ impl Orchestrator {
         }
 
         self.cleanup_job(store, repository, job_id, runner_name, workspace)?;
-        Ok(())
+        Ok(exited_cleanly)
     }
 }

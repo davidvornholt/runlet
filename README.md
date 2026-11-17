@@ -190,10 +190,11 @@ GitHub gives a queued job to any idle runner whose labels match, not to the
 runner Runlet started for it. So Runlet records each run it accepts for each
 trust class, and the runner image's job-started hook stops any job whose run
 isn't recorded for its runner's class, before the job's first step. A denied
-job therefore never runs on a runner Runlet started for another job. When a
+job's steps therefore never run on a runner Runlet started for another job,
+though the runner has already downloaded the actions the job uses. When a
 runner finishes another job while its own job still waits, Runlet starts a new
-runner for that job, up to three times. If an allowed job takes a runner of the
-other trust class, the hook stops it as well; re-run that job.
+runner for that job. If an allowed job takes a runner of the other trust class,
+the hook stops it as well; re-run that job.
 
 ## NixOS module
 

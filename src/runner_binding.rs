@@ -16,9 +16,6 @@ use std::time::{Duration, SystemTime};
 /// Where the runner image's job-started hook looks for accepted runs.
 pub const CONTAINER_ALLOWED_RUNS_DIR: &str = "/etc/runlet/allowed-runs";
 
-/// How many extra runners Runlet starts for one job whose runner other jobs took.
-pub const MAX_REPLACEMENT_RUNNERS: u32 = 3;
-
 /// A job waits at most a day in GitHub's queue, so older records are no longer needed.
 pub const ALLOWED_RUN_MAX_AGE: Duration = Duration::from_secs(2 * 24 * 60 * 60);
 

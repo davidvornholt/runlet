@@ -57,6 +57,8 @@ pub struct Store {
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> rusqlite::Result<Self> {
         let connection = Connection::open(path)?;
+        // Each job's thread has its own connection, so wait for the others' writes.
+        connection.busy_timeout(std::time::Duration::from_secs(10))?;
         let store = Self { connection };
         store.migrate()?;
         Ok(store)

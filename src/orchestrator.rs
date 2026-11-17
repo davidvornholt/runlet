@@ -1,5 +1,5 @@
 use crate::concurrency::ConcurrencyLimiter;
-use crate::config::{Config, TrustClass};
+use crate::config::Config;
 use crate::duration::parse_duration;
 use crate::github::{GitHubClient, RepositoryId};
 use crate::job_trust::{classify_job, JobTrust};
@@ -10,13 +10,13 @@ use crate::policy::{
     decide, validate_capability_labels, GitHubEventKind, JobContext, PolicyDecision,
     PolicyViolation,
 };
-use crate::runner_binding::{allow_run, MAX_REPLACEMENT_RUNNERS};
+use crate::runner_binding::allow_run;
 use crate::state::{JobRecord, JobStatus, Store};
 use crate::webhook::JobRequest;
 use crate::webhook_server::serve_webhooks;
 use crate::workflow_risk::{workflow_risk_decision, WorkflowRiskDecision};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use thiserror::Error;
 use uuid::Uuid;
@@ -41,24 +41,6 @@ pub enum OrchestratorError {
     LimitsUnenforceable(String),
     #[error("cleanup command failed: {0}")]
     CleanupCommandFailed(String),
-    #[error("job concurrency limit is currently full")]
-    ConcurrencyBusy,
-}
-
-/// A queued job plus its verified trust, kept across concurrency retries so a
-/// busy runner pool does not repeat the GitHub lookups.
-pub(crate) struct PendingJob {
-    request: JobRequest,
-    trust: Option<JobTrust>,
-}
-
-impl From<JobRequest> for PendingJob {
-    fn from(request: JobRequest) -> Self {
-        Self {
-            request,
-            trust: None,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -84,17 +66,25 @@ impl Orchestrator {
         store.mark_interrupted_jobs_cleanup_pending()?;
         let webhook_secret = read_secret(&self.config.orchestrator.webhook_secret_file)?;
         let cleanup_interval = parse_duration(&self.config.orchestrator.cleanup_interval)?;
-        let (sender, receiver) = mpsc::channel::<PendingJob>();
-        let shared_receiver = Arc::new(Mutex::new(receiver));
+        let (sender, receiver) = mpsc::channel::<JobRequest>();
 
-        for worker_id in 0..self.config.runtime.max_concurrent_jobs {
-            let worker = self.clone();
-            let receiver = Arc::clone(&shared_receiver);
-            let retry_sender = sender.clone();
-            thread::Builder::new()
-                .name(format!("runlet-worker-{worker_id}"))
-                .spawn(move || worker.worker_loop(receiver, retry_sender))?;
-        }
+        // Each delivery gets its own thread, so Runlet admits and records a run
+        // while every slot is busy, before a runner already waiting can take
+        // the run's job. Jobs then wait for a slot.
+        let dispatcher = self.clone();
+        thread::Builder::new()
+            .name("runlet-dispatcher".to_string())
+            .spawn(move || {
+                for request in receiver {
+                    let worker = dispatcher.clone();
+                    let spawned = thread::Builder::new()
+                        .name(format!("runlet-job-{}", request.github_job_id))
+                        .spawn(move || worker.process_job(request));
+                    if let Err(error) = spawned {
+                        tracing::warn!(%error, "could not start a thread for a job");
+                    }
+                }
+            })?;
 
         let cleaner = self.clone();
         thread::Builder::new()
@@ -114,40 +104,12 @@ impl Orchestrator {
         Ok(())
     }
 
-    fn worker_loop(&self, receiver: Arc<Mutex<Receiver<PendingJob>>>, sender: Sender<PendingJob>) {
-        loop {
-            let pending = {
-                let locked = receiver
-                    .lock()
-                    .expect("job receiver lock should not be poisoned");
-                locked.recv()
-            };
-            let Ok(PendingJob { request, trust }) = pending else {
-                return;
-            };
-            let trust = match trust.map_or_else(|| self.verify_trust(&request), Ok) {
-                Ok(trust) => trust,
-                Err(error) => {
-                    tracing::warn!(%error, "job failed");
-                    continue;
-                }
-            };
-            match self.run_job(request.clone(), trust.clone()) {
-                Ok(()) => {}
-                Err(OrchestratorError::ConcurrencyBusy) => {
-                    let retry = PendingJob {
-                        request,
-                        trust: Some(trust),
-                    };
-                    if sender.send(retry).is_err() {
-                        return;
-                    }
-                    thread::sleep(std::time::Duration::from_millis(100));
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "job failed");
-                }
-            }
+    fn process_job(&self, request: JobRequest) {
+        let result = self
+            .verify_trust(&request)
+            .and_then(|trust| self.run_job(request, trust));
+        if let Err(error) = result {
+            tracing::warn!(%error, "job failed");
         }
     }
 
@@ -192,18 +154,6 @@ impl Orchestrator {
         let pull_request_numbers = pull_request_check
             .pull_request_numbers()
             .map_err(OrchestratorError::PolicyDenied)?;
-        if policy.trust_class == TrustClass::Trusted {
-            // Record trusted runs before waiting for a slot, so a trusted job
-            // that takes an idle runner from a full pool isn't failed.
-            allow_run(
-                &self.config.runtime.jobs_dir,
-                policy.trust_class,
-                request.run_id,
-            )?;
-        }
-        let Some(_permit) = self.concurrency.try_acquire(policy.trust_class) else {
-            return Err(OrchestratorError::ConcurrencyBusy);
-        };
         let repository = RepositoryId::parse(&request.repository)?;
         let store = Store::open(&self.config.state.database_path)?;
         let job_id = format!("{}-{}", request.github_job_id, Uuid::new_v4());
@@ -331,6 +281,7 @@ impl Orchestrator {
             return Err(error.into());
         }
 
+        let _permit = self.concurrency.acquire(policy.trust_class);
         let runner = RunnerLaunch {
             store: &store,
             repository: &repository,
@@ -340,10 +291,14 @@ impl Orchestrator {
             job_id: &job_id,
             workspace: &workspace,
         };
-        // A runner that ends while its job still waits in GitHub's queue ran
-        // another job or none, so start another one, up to a limit.
-        for replacement in 1..=MAX_REPLACEMENT_RUNNERS {
-            self.run_runner(&runner, &runner_name)?;
+        // A runner that exits cleanly ran a job. While GitHub still queues this
+        // one, that was another job, so start a new runner. Each such job is
+        // gone once it ran, so this ends.
+        let mut replacement = 0;
+        loop {
+            if !self.run_runner(&runner, &runner_name)? {
+                return Ok(());
+            }
             let job_is_queued = self
                 .github
                 .workflow_job_is_queued(&repository, request.github_job_id)
@@ -354,6 +309,7 @@ impl Orchestrator {
             if !job_is_queued {
                 return Ok(());
             }
+            replacement += 1;
             tracing::info!(%job_id, github_job_id = request.github_job_id, replacement, "the job still waits for a runner; starting a replacement");
             store.append_event(
                 &job_id,
@@ -365,8 +321,6 @@ impl Orchestrator {
             runner_name = format!("runlet-{job_id}-{replacement}");
             store.set_job_runner_name(&job_id, &runner_name)?;
         }
-        self.run_runner(&runner, &runner_name)?;
-        Ok(())
     }
 }
 
