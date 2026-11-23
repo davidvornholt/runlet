@@ -109,7 +109,7 @@ jobs:
         run: |
           docker logout ghcr.io || true
           image="$(printf '%s\n' "${IMAGE_TAGS}" | head -n 1)"
-          for attempt in {1..6}; do
+          for _ in {1..6}; do
             if docker buildx imagetools inspect "${image}" >/dev/null; then
               echo "${image} is publicly readable"
               exit 0

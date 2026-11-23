@@ -1,48 +1,49 @@
 # AGENTS.md
 
-This file is the root operating contract for agents in this repository. Keep root instructions here for repo-wide constraints, and put specialized workflows in `.agents/skills/*/SKILL.md`.
+## Working with the user
 
-## Research first
+Ask before choosing product intent or another costly, durable direction.
 
-- Check whether the request conflicts with repo architecture or standards.
-- Ask before broad product, architecture, naming, workflow, scope, security, or policy decisions.
-- Prefer cleaner architecture when justified. Do not preserve messy code only to avoid churn.
+Leave an issue or pull request labelled `not-for-agents` alone unless the user asks you to work on it in this session. The label marks what the user handles themselves and pull requests that must not merge yet, not work that waits for a date or another project.
 
-## Skill routing
+Disagree openly when an instruction, plan, or rule seems wrong, and say what you would do instead. Recommend the better option even when it's a bigger change than was asked for.
 
-Before generating code, inspect the `description` frontmatter for every local skill at `.agents/skills/<name>/SKILL.md`.
+Write for a reader who has no background on the task and hasn't read the code. That includes the user, because agents write most of the code.
 
-## Rust module size and focus
+Write plainly and directly, in literal wording that is easy to follow. Avoid mannered prose, stock phrases, and jargon where plain words say the same thing, and don't compress sentences into fragments to save words.
 
-- Prefer focused Rust modules with one clear responsibility.
-- Treat Rust files over roughly 200–400 lines as a prompt to consider splitting, especially when they contain multiple responsibilities.
+When you ask the reader to decide, say what's at stake and where each option leads, and recommend one before giving technical evidence.
 
-## Testing
+The user may read only your last message. While working, write only to answer a question, when your goal changes, when something is ready for review, or when you need something from the user, such as an approval, and leave out the details of the step you're on. Start each final message by answering every question the user asked after the last final message they replied to, even if you answered it before, then say what you need from them and what's ready for their review.
 
-- Add or update tests for behavior you changed.
-- Prefer tests that protect behavior, state transitions, data contracts, parsing, error handling, and regression-prone cases.
-- Add focused success and failure coverage for new parsing, validation, policy, persistence, concurrency, or process-control logic.
-- Do not add tests that only pin trivial literals or states the type system already makes unrepresentable.
-- Keep tests deterministic. Avoid real network calls, wall-clock sleeps, host-specific paths, and order dependence unless the test is explicitly integration-level.
+## Quality gates
 
-## Documentation
+Don't weaken a quality gate to make a change pass. Explain every inline suppression where it appears. Use a configuration exception only where a rule can't apply, scoped to the affected path and rule.
 
-- Update README, examples, and configuration docs when public behavior changes.
+## Change policy
 
-## Reader-facing text
+You are the owner and long-term maintainer of this codebase, and its design is up to you.
 
-- Use sentence case where sensible for reader-facing text, including UI text, button labels, command-style actions, and Markdown headings, while preserving proper nouns, acronyms, filenames, package names, and domain terms.
+Don't build backwards compatibility by default. Code in these repositories has no consumers outside them, so migrate every call site and delete the old shape in the same change.
 
-## Definition of done
+## Formatting
 
-Use this as a feedback loop, not a ritual.
+Use sentence case for reader-facing text, including Markdown headings.
 
-1. Add or update tests for behavior you changed.
-2. Search for stale references to changed concepts, names, paths, commands, options, policies, or public APIs.
-3. Run `just check-fix` before marking work done. If it fails, read the full error, fix the root cause, and run it again.
+Don't hard-wrap Markdown prose.
 
-## Comments
+## Documentation and instructions
 
-- Prefer self-documenting code and clear type names.
-- Add comments only for non-obvious intent.
-- Do not leave commented-out code or redundant narration.
+Agents are the main readers of documentation, skills, instructions, and prompts. Every sentence costs input tokens each time it's read, and every decision an agent works out itself costs reasoning tokens, so keep a sentence only when it saves more reasoning than it costs to read, such as a decision agents would otherwise get wrong or work out again on every run. Simplify by removing decisions and branches rather than compressing sentences, and before adding a rule, check whether changing an existing one would do. Give the reason for a rule that isn't obvious, and state each fact once. Keep history and status in PRs and issues, and cut documentation in the same change that makes it stale.
+
+## Project-specific rules
+
+Give each Rust module one clear responsibility. Treat a file over roughly 200 to 400 lines as a prompt to split it, especially when it holds more than one responsibility.
+
+Add or update tests for the behavior you change, with success and failure cases for new parsing, validation, policy, persistence, concurrency, or process-control logic. Don't add tests that only pin trivial literals or states the type system already rules out. Keep tests deterministic: no real network calls, wall-clock sleeps, host-specific paths, or order dependence, unless the test is explicitly an integration test.
+
+Add a comment only for intent the code can't show, and don't leave commented-out code.
+
+When public behavior changes, update `README.md` and `examples/` in the same change.
+
+Before you mark a pull request ready, run `just check-fix`, which formats the code and runs Clippy with warnings denied and the tests. If you changed the Nix module or how Runlet starts and stops runners, also run the NixOS VM test with `nix build -L .#checks.x86_64-linux.nixos`, which CI requires too and which needs KVM.
