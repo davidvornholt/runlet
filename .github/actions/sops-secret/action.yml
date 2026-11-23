@@ -1,0 +1,198 @@
+name: Resolve SOPS secret
+description: Install pinned SOPS and output one validated secret value
+
+inputs:
+  age-key:
+    description: Age identity that can decrypt the secret file
+    required: false
+  secret-file:
+    description: SOPS-encrypted YAML file
+    required: true
+  secret-root:
+    description: Mapping from which secret-key resolves; ci or document
+    required: false
+    default: ci
+  secret-key:
+    description: Direct key or dotted path to resolve from the selected mapping
+    required: true
+
+# The value is a step output, never an environment variable: only a step that
+# names steps.<id>.outputs.value in its env or inputs receives it, so unrelated
+# later steps in the job cannot read it.
+outputs:
+  value:
+    description: Resolved secret value; pass it only to the step that consumes it
+    value: ${{ steps.resolve.outputs.value }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve and validate secret
+      id: resolve
+      shell: bash
+      env:
+        RELEASE_API_TOKEN: ${{ github.token }}
+        SOPS_AGE_KEY: ${{ inputs.age-key }}
+        SOPS_SECRET_FILE: ${{ inputs.secret-file }}
+        SOPS_SECRET_ROOT: ${{ inputs.secret-root }}
+        SOPS_SECRET_KEY: ${{ inputs.secret-key }}
+      run: |
+        set -euo pipefail
+        set +x
+        release_api_token=${RELEASE_API_TOKEN-}
+        unset RELEASE_API_TOKEN
+        export -n release_api_token
+        case "$release_api_token" in
+          ''|*$'\r'*|*$'\n'*) echo "::error::A single-line GitHub workflow token is required" >&2; exit 1 ;;
+        esac
+
+        case "$SOPS_SECRET_ROOT" in
+          ci) secret_path="ci.$SOPS_SECRET_KEY" ;;
+          document) secret_path="$SOPS_SECRET_KEY" ;;
+          *)
+            echo "::error::secret-root must be ci or document"
+            exit 1
+            ;;
+        esac
+
+        decrypted_file=$(mktemp "$RUNNER_TEMP/sops-secret-decrypted.XXXXXX")
+        value_file=$(mktemp "$RUNNER_TEMP/sops-secret-value.XXXXXX")
+        trap 'rm -f "$decrypted_file" "$value_file"' EXIT
+
+        reason=""
+        if [ -z "$SOPS_AGE_KEY" ]; then
+          reason="SOPS_AGE_KEY is not configured"
+        elif [ ! -f "$SOPS_SECRET_FILE" ]; then
+          reason="$SOPS_SECRET_FILE does not exist"
+        else
+          version=v3.13.3
+          case "$(uname -m)" in
+            x86_64) arch=amd64 asset=486808201 sha=e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b ;;
+            aarch64) arch=arm64 asset=486808229 sha=53b0abacd38ef1b12a66d6c100956691b9cefce018d91f81e73ddf7438b94d77 ;;
+            *) reason="No pinned SOPS binary for runner architecture $(uname -m)" ;;
+          esac
+          sops="$RUNNER_TEMP/sops"
+          # Runners occasionally see the download stall and end in an HTTP
+          # error, so each attempt is capped and retried.
+          if [ -z "$reason" ] && ! {
+            curl --disable --proto '=https' --proto-redir '=https' -sSfLo "$sops" --retry 3 --retry-all-errors --connect-timeout 10 --max-time 60 "https://github.com/getsops/sops/releases/download/${version}/sops-${version}.linux.${arch}" || \
+              printf 'Authorization: Bearer %s\n' "$release_api_token" | curl --disable --proto '=https' --proto-redir '=https' -sSfLo "$sops" --retry 3 --retry-all-errors --connect-timeout 10 --max-time 60 -H @- -H "Accept: application/octet-stream" "https://api.github.com/repos/getsops/sops/releases/assets/${asset}"
+          }; then
+            rm -f "$sops"
+            reason="Downloading SOPS ${version} for linux/${arch} failed"
+          fi
+          if [ -z "$reason" ] && ! echo "$sha  $sops" | sha256sum --check --quiet; then
+            rm -f "$sops"
+            reason="Downloaded SOPS binary does not match the pinned checksum"
+          fi
+          if [ -z "$reason" ]; then
+            chmod +x "$sops"
+            if ! "$sops" decrypt --output-type json "$SOPS_SECRET_FILE" > "$decrypted_file"; then
+              reason="Decrypting $SOPS_SECRET_FILE with SOPS failed"
+            else
+              lookup_filter='
+                def descend($root; $path):
+                  reduce $path[] as $part (
+                    { found: true, value: $root };
+                    if .found and (.value | type) == "object" and (.value | has($part))
+                    then { found: true, value: .value[$part] }
+                    else { found: false, value: null }
+                    end
+                  );
+                def selected_root:
+                  if $secret_root == "ci" then .ci else . end;
+                def resolve:
+                  selected_root as $root
+                  | if ($root | type) != "object" then
+                    { status: "missing", value: null }
+                  else
+                    ($key | split(".")) as $path
+                    | ($root | has($key)) as $has_direct
+                    | descend($root; $path) as $nested
+                    | if ($path | length) > 1 and $has_direct and $nested.found then
+                        { status: "ambiguous", value: null }
+                      elif $has_direct then
+                        { status: "found", value: $root[$key] }
+                      elif $nested.found then
+                        { status: "found", value: $nested.value }
+                      else
+                        { status: "missing", value: null }
+                      end
+                    | if .status != "found" then .
+                      elif (.value | type) != "string" then .status = "non-string"
+                      elif .value == "" then .status = "empty"
+                      else .
+                      end
+                  end;
+                resolve
+              '
+              if ! lookup_status=$(jq -r --arg key "$SOPS_SECRET_KEY" --arg secret_root "$SOPS_SECRET_ROOT" "$lookup_filter | .status" "$decrypted_file"); then
+                reason="Resolving $secret_path from $SOPS_SECRET_FILE failed"
+              else
+                case "$lookup_status" in
+                  found)
+                    jq -j --arg key "$SOPS_SECRET_KEY" --arg secret_root "$SOPS_SECRET_ROOT" "$lookup_filter | .value" "$decrypted_file" > "$value_file"
+                    ;;
+                  missing)
+                    reason="$secret_path is missing in $SOPS_SECRET_FILE"
+                    ;;
+                  ambiguous)
+                    reason="$secret_path is ambiguous because both a direct key and nested path exist in $SOPS_SECRET_FILE"
+                    ;;
+                  non-string)
+                    reason="$secret_path is not a string in $SOPS_SECRET_FILE"
+                    ;;
+                  empty)
+                    reason="$secret_path is empty in $SOPS_SECRET_FILE"
+                    ;;
+                  *)
+                    reason="Resolving $secret_path from $SOPS_SECRET_FILE returned an unknown status"
+                    ;;
+                esac
+              fi
+            fi
+          fi
+        fi
+
+        # An unresolvable secret always fails the step. There is deliberately no
+        # mode that substitutes a default: a caller that degrades quietly turns
+        # a broken credential into a green run.
+        if [ -n "$reason" ]; then
+          echo "::error::$reason"
+          exit 1
+        fi
+        # Unreachable through the resolve statuses above, which reject an empty
+        # value with a precise message. Kept as a last guard on the output
+        # boundary so a future filter change cannot output an empty credential.
+        if [ ! -s "$value_file" ]; then
+          echo "::error::Resolved secret value must be non-empty"
+          exit 1
+        fi
+
+        line_break_count=$(LC_ALL=C tr -cd '\r\n' < "$value_file" | wc -c)
+        mask_value() {
+          local escaped_value=${1//'%'/'%25'}
+          escaped_value=${escaped_value//$'\r'/'%0D'}
+          printf '%s\n' "::add-mask::$escaped_value"
+        }
+        if [ "$line_break_count" -eq 0 ]; then
+          value=$(< "$value_file")
+          mask_value "$value"
+          printf 'value=%s\n' "$value" >> "$GITHUB_OUTPUT"
+        else
+          while IFS= read -r line || [ -n "$line" ]; do
+            if [ -n "$line" ]; then
+              mask_value "$line"
+            fi
+          done < "$value_file"
+
+          delimiter=SOPS_SECRET_EOF
+          delimiter_suffix=0
+          while grep -Fqx "$delimiter" "$value_file" || grep -Fqx "$delimiter"$'\r' "$value_file"; do
+            delimiter_suffix=$((delimiter_suffix + 1))
+            delimiter="SOPS_SECRET_EOF_$delimiter_suffix"
+          done
+          printf 'value<<%s\n' "$delimiter" >> "$GITHUB_OUTPUT"
+          cat "$value_file" >> "$GITHUB_OUTPUT"
+          printf '\n%s\n' "$delimiter" >> "$GITHUB_OUTPUT"
+        fi

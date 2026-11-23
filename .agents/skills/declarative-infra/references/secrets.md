@@ -1,0 +1,75 @@
+# Secrets bootstrap (SOPS + age)
+
+This applies to every repo with encrypted secrets, with or without hosts. Host recipients are in [bootstrap.md](bootstrap.md#host-secrets). Which values are secret, where each is documented, and the development environment layers are in the [secrets-and-config skill](../../secrets-and-config/SKILL.md).
+
+## Commands
+
+A repository on the `bun` payload runs the steps on this page through its `just secrets` recipes. A target name binds `infra/hosts/<target>/secrets.yaml` or `secrets/<target>.yaml`, and there is no per-repo target map. A repository on the core payload has no `justfile`, so it installs `age`, `sops`, and, for host recipients, `ssh-to-age`, exports `SOPS_AGE_KEY_FILE` as [Repository outside Bun](https://github.com/davidvornholt/standards/blob/main/docs/adoption.md#repository-outside-bun) describes, and runs the tools on the file path directly:
+
+| Step | `bun` payload | Core payload |
+| --- | --- | --- |
+| Create an age key and print its recipient | `just secrets age-create [<file>]` | `age-keygen -o <file>`, after `mkdir -p` of its directory. It prints the recipient as `Public key: age1...` and refuses to overwrite an existing file. |
+| Print an age key's recipient | `just secrets age-recipient [<file>]` | `age-keygen -y <file>` |
+| Create or edit a target | `just secrets edit <target>` | `sops <path>` |
+| Re-encrypt a target for the recipients `.sops.yaml` now lists | `just secrets updatekeys <target>` | `sops updatekeys <path>` |
+| Run the standards CLI | `bun standards <command>` | `bash .agents/skills/standards-sync/scripts/standards.sh <command>` |
+
+`<file>` defaults to `~/.config/sops/age/keys.txt` for the recipes.
+
+## Identities and recipients
+
+- A personal identity is a standalone age key at `~/.config/sops/age/keys.txt`, one per person and machine. Create it with `just secrets age-create`.
+- Each automation recipient (CI, PR preview) is a keypair for one purpose in one repo, so a leaked runner key unlocks no other repo. Its private key lives only in the consumer's secret store, which for GitHub Actions is the `SOPS_AGE_KEY` secret. Losing one is recoverable, because the personal identities can re-encrypt the files to a replacement with `updatekeys`.
+- In `.sops.yaml`, give each recipient a named anchor and a comment saying what it is. The anchor alone must identify the key: person and machine for a personal identity, purpose for automation. Use a hostname verbatim when it already names the owner (`&dana-fw13-nixos`), and otherwise prefix the person (`&alice-work-laptop`).
+- Every creation rule includes all personal identities. Automation recipients go only on the files that automation reads.
+
+Create an automation keypair in a temporary directory, so the private key ends up only in the secret store:
+
+```sh
+d=$(mktemp -d)
+just secrets age-create "$d/key"    # prints the recipient for .sops.yaml; core payload: age-keygen -o "$d/key"
+grep AGE-SECRET-KEY "$d/key" | gh secret set SOPS_AGE_KEY
+rm -rf "$d"
+```
+
+## GitHub Actions
+
+- `SOPS_AGE_KEY` is the repo's only native Actions secret. Every other CI secret lives in SOPS targets and is decrypted at runtime.
+- Decrypt with the synced [`sops-secret` action](../../../../.github/actions/sops-secret/action.yml). Any other decryption must use a version- and checksum-pinned sops and mask every value with `::add-mask::`, because SOPS output gets no automatic masking.
+- The Standards gate's settings check holds no credential and reads with the workflow token. Do not add one: a probe showed that an installation token sees the same state.
+
+## Brokered provider credentials
+
+Cloudflare API tokens and cross-repo GitHub credentials come from `bun standards creds`, which writes values straight into SOPS targets and never prints them. `bun standards creds help` and its error messages cover the scoping flags. Do not hand-create a dashboard credential for a need the broker covers.
+
+An R2 S3 pair (`--s3`) is used against `https://<account_id>.r2.cloudflarestorage.com`, or `https://<account_id>.eu.r2.cloudflarestorage.com` for the EU jurisdiction.
+
+### GitHub App ceiling
+
+- Create one private broker App per owning user or organization, installed only on selected repositories that account owns, with exactly Contents write, Metadata read, Pull requests write, and Workflows write. Workflows write is needed because the canonical payload owns `.github/workflows/**`, which Contents write cannot push.
+- A workflow's `permission-*` inputs only narrow a mint. The App's permissions are the real reach of the private key in every consumer's `secrets/ci.yaml`.
+- To widen the ceiling, change `creds-login-github-manifest.ts` and also toggle the permission on the existing App's settings page, because the manifest is read only when an App is created. Added permissions stay unavailable until every installation owner approves them.
+- A need that only one owner's project-specific workflows have is a toggle on that owner's App alone, recorded in the repository whose workflows use it.
+
+### Reconciliation
+
+- `creds apply` renews tokens that expire within 30 days, and expired ones, and retires each brokered token whose SOPS key you deleted (both derived keys for an S3 pair), together with any active superseded token for that key.
+- Brokered tokens last a year (`creds add` defaults to 365 days). Renewal keeps a longer `--ttl-days` lifetime and never renews for less than a year, so tokens minted for 90 days before standards#545 get a year at their next renewal.
+- Nothing renews on its own. `creds watch` lists every repository's brokered tokens that expire within 30 days, reading Cloudflare's own expiry with one read-only token (Account API Tokens Read) per account in `STANDARDS_CREDS_WATCH_<account-id>`, or else the broker store. With `--issues` it keeps one issue per affected repository in `$GITHUB_REPOSITORY` and closes it once none of the repository's tokens is due. It is meant to run on a schedule with `--issues` in a private repository, because the issues name private repositories and their secret keys.
+- Renewal doesn't revoke the old token. Once the replacement is stored it renames the old one `<name> (superseded)` and leaves its expiry as it was, so a running app keeps working until the replacement deploys. Deploy before the old token expires. While the key exists, `plan` lists superseded tokens without acting on them, `watch` ignores them, and Cloudflare expires them on their own. An already expired old token is deleted instead.
+- The unmanaged-token and other-repository reports never block. The unmanaged report is an account-wide inventory, so unrelated tokens repeat in every repository and run, and a nonempty report is not a failure. Still assess unfamiliar entries. A hand-made credential you replaced stays live until you run the `revoke` command its row prints.
+- `creds revoke` is only for tokens that reconciliation does not retire, such as same-name duplicates left by an interrupted renewal (deploy the stored token and confirm the app works with it first), or a token brokered to a repository that was renamed, transferred, or deleted. Its refusals print the remedy.
+
+Each machine creates its own `standards-broker` bootstrap token. Cloudflare allows duplicate names, and login requires this name (case-insensitive). Leave other machines' `standards-broker` tokens alone, because renaming one removes its name-based protection. Retire a superseded bootstrap token in the Cloudflare dashboard after confirming whose it is. Nothing overrides `revoke`'s refusal of bootstrap tokens.
+
+## Hand rotation
+
+A host's private-GHCR `registry.github_token` rotates through the sequence in [Private registry access](bootstrap.md#private-registry-access).
+
+GitHub App keys also rotate by hand, in this order:
+
+1. Create a replacement private key on the App's settings page.
+2. Atomically replace `private_key` in the `github` entry for that `owner` in the broker store (the path login prints, normally `~/.config/standards/broker.yaml`), keeping mode `0600`. Updating the store first keeps later `creds add github` runs from restoring the revoked key.
+3. Update every intended SOPS destination for that owner.
+4. Verify that workflows can mint installation tokens.
+5. Revoke the old key.

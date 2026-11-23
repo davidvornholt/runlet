@@ -1,0 +1,31 @@
+{
+  "upstream": "github:davidvornholt/standards",
+  "sha": "1dc3ba7ff002b67a147ffe7e7475579b0367a928",
+  "files": {
+    ".agents/skills/ci-pipelines/SKILL.md": "749a5d50c43e67ffd11ffb85da874df6accab0e8559fa15abd769170f0426c17",
+    ".agents/skills/declarative-infra/agents/openai.yaml": "7732c5756d4d9dc276ed218b94a09b7c952cab3ef8a3d2a1b62fd1c0e4da2d6e",
+    ".agents/skills/declarative-infra/references/app-release.md": "057d539ae37496f28ff15352cca8bf12626435c7cef5561121b9c9d04fc9873b",
+    ".agents/skills/declarative-infra/references/bootstrap.md": "b51cdb3121001663a6e4501f9f6b3c5cbf5010633b339b8a13001343ef70a5b0",
+    ".agents/skills/declarative-infra/references/pr-previews.md": "7a226b976e6d54db838dc2eae108a883c034e5b8bd2996fe87007bf49e16afb9",
+    ".agents/skills/declarative-infra/references/secrets.md": "da1c97692e5598726a97aa72979594fb401411cc51f5dc45af83455266293330",
+    ".agents/skills/declarative-infra/references/vendor-images.md": "3e4b649c76e2950b640b6b680f73597ca770937c6c708251329c64b7030e309a",
+    ".agents/skills/declarative-infra/SKILL.md": "fc586e2856dd278652d69f53833aff5c41f7af38c8490b4dfe2a9d8247d0bbb5",
+    ".agents/skills/issues/SKILL.md": "1cb4ec0e6e7ec49530508b9108f1d4cae33fc8ba74fc6b090068924b5fd7a0e4",
+    ".agents/skills/prs/SKILL.md": "42239a0c618f1a3cfb8923e5e2e238423c5d9e1ca14289c1b92fd43bfbea0011",
+    ".agents/skills/review-fix/SKILL.md": "a16079273b4396a66b182c7e2319bd815445f5341532d4954e1e8207df793d2c",
+    ".agents/skills/review/SKILL.md": "c36d6e32df1cd693fbbf5dc95d4ba57ce239c9e38ce7c437f18ddded76dae492",
+    ".agents/skills/secrets-and-config/SKILL.md": "cc503b3059e0ab34cbfb85c24cca38a3a93ba0da582ae8a7b9692384615b5129",
+    ".agents/skills/standards-sync/agents/openai.yaml": "34a2d5f7474f257663e98a98999106e7d215c51619ce1467eb9f10a5a8e082bd",
+    ".agents/skills/standards-sync/references/github.md": "18c15a4c7775161d1a8140e8365dd27f13b96e2c89cbc5e1da746bf9112fedd4",
+    ".agents/skills/standards-sync/scripts/standards.sh": "25e42a01e05c2a1fe744385992f469b95c09636493d2e3d3e4f2340ed3377427",
+    ".agents/skills/standards-sync/SKILL.md": "d855a8322cfd8c92b311931d16e150c72a017c15f3dc4c3a54db1c13446ae204",
+    ".claude/skills": "46e7c0c6e8f3bd5ac2cb8978db058041d60b9034ba2a60c7268777a1438ff117",
+    ".github/actions/sops-secret/action.yml": "c7eaf24946b47f3c5185bc9635739419754423a4d2662c8574197d0888daef7c",
+    ".github/settings.json": "2863bfd705fbe5d0a97dd85552cfbe6fe5d3e06cea4d38d29b8830e044b72841",
+    ".github/workflows/standards-auto-merge.yml": "62d26e4a2df34fbb530d849fd9028f7280a64c2193712d84f677438447392af1",
+    ".github/workflows/standards-sync.yml": "81a9ce87071383dbf73fc69728086f20d06977dda5583af91686bb07517fcb38",
+    ".github/workflows/standards.yml": "513cbdd37b6c117e57ee044f495a538f805b403f2319be83acd63cb76a1c6579",
+    "AGENTS.md": "3cd173b4b362e3ff82486091edb7c083df827d8d16209522961053c666e31977",
+    "sync-standards.json": "772450df32e3016ac8e3a5dd595e6035d659d62a3c799925c64d79c6a7c1961f"
+  }
+}

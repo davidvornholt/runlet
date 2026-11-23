@@ -1,0 +1,31 @@
+{
+  "repository": {},
+  "rulesets": [
+    {
+      "name": "Require the CI checks",
+      "target": "branch",
+      "enforcement": "active",
+      "conditions": {
+        "ref_name": {
+          "include": ["~DEFAULT_BRANCH"],
+          "exclude": []
+        }
+      },
+      "bypass_actors": [],
+      "rules": [
+        {
+          "type": "required_status_checks",
+          "parameters": {
+            "strict_required_status_checks_policy": true,
+            "do_not_enforce_on_create": false,
+            "required_status_checks": [
+              { "context": "Rust checks", "integration_id": 15368 },
+              { "context": "Nix flake evaluation", "integration_id": 15368 },
+              { "context": "NixOS VM test", "integration_id": 15368 }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

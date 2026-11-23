@@ -1,0 +1,14 @@
+keys:
+  # Standalone age identity on david-z890-nixos at ~/.config/sops/age/keys.txt.
+  - &david-z890-nixos age1gxzu2f027zu227f4wyf4jh5sw0w495482qfzv5flmfyjvgzxm3ys8p9muz
+  # Standalone age identity on david-x1-nixos at ~/.config/sops/age/keys.txt.
+  - &david-x1-nixos age1cgudsv52h62snquglvayft2n4ck522x4at5aja57un06w9w0gszqzfqtce
+  # GitHub Actions CI recipient (private key: SOPS_AGE_KEY Actions secret).
+  - &github_actions_ci age1qxpaghk36mhnfjphjhhcxtyny5k0cfcl9tnmdzl7mpxawrgsg94s956ulc
+creation_rules:
+  - path_regex: secrets/ci\.yaml$
+    key_groups:
+      - age:
+          - *david-z890-nixos
+          - *david-x1-nixos
+          - *github_actions_ci

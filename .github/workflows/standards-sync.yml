@@ -1,0 +1,718 @@
+name: Standards sync
+
+# Closes the one gap `standards check` cannot: it detects local tampering, not that
+# UPSTREAM moved on. This runs `sync` on a cadence and opens a PR when the
+# mirror actually changes, so a repo learns about new standards without anyone
+# remembering to pull. Synced from davidvornholt/standards; the standards
+# source repository opts out through its repo-owned sync policy.
+#
+# Cadence and pinning are repo policy, not canonical content, so they live in
+# the consumer-owned sync-standards.local.json next to this (read-only) file,
+# versioned and reviewable like any other configuration. All fields optional:
+#   { "autoSync": false }  skip the weekly scheduled run; use the local CLI
+#                          when you want to sync deliberately.
+#   { "ref": "v0.7.0" }    tag, branch, or full commit sha to sync from
+#                          instead of main. The CLI reads the same file, so a
+#                          local `bun standards sync` obeys the same pin.
+#                          Without a ref, each run in a Bun consumer also
+#                          raises @davidvornholt/standards in package.json
+#                          to the newest release.
+#   { "payload": "core" }  receive only the language-neutral standards, for a
+#                          repository that isn't a Bun workspace. This
+#                          workflow then runs the CLI from the upstream
+#                          source it syncs. The default, "bun", adds the Bun
+#                          workspace standards.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: standards-sync
+  cancel-in-progress: false
+
+# A sole-maintainer personal repository may route every compatible canonical
+# job through its permissionless CodeBuild project. GitHub supplies this trusted
+# workflow's existing secrets and token permissions to that ephemeral runner.
+jobs:
+  # Cheap preflight: job-level `if:` expressions cannot read repository files,
+  # so this job surfaces the checked-in policy for the gate below. A missing
+  # file means the defaults (auto-sync on); an unparseable one fails this job
+  # loudly — and with it the gated sync — rather than guessing a default.
+  policy:
+    runs-on: ${{ vars.CI_CODEBUILD_PROJECT != '' && format('codebuild-{0}-{1}-{2}-small', vars.CI_CODEBUILD_PROJECT, github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    outputs:
+      auto-sync: ${{ steps.read.outputs.auto-sync }}
+      payload: ${{ steps.read.outputs.payload }}
+      present: ${{ steps.read.outputs.present }}
+      ref: ${{ steps.read.outputs.ref }}
+    steps:
+      - name: Checkout policy file
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: sync-standards.local.json
+          sparse-checkout-cone-mode: false
+
+      - name: Read sync policy
+        id: read
+        run: |
+          if [ -f sync-standards.local.json ]; then
+            if ! jq -e '
+              type == "object"
+              and ((keys - ["autoSync", "payload", "ref"]) | length == 0)
+              and ((has("autoSync") | not) or (.autoSync | type == "boolean"))
+              and ((has("payload") | not) or .payload == "core" or .payload == "bun")
+              and (
+                (has("ref") | not)
+                or (
+                  (.ref | type == "string")
+                  and (.ref | length > 0)
+                  and (.ref | contains("\n") | not)
+                  and (.ref | contains("\r") | not)
+                )
+              )
+            ' sync-standards.local.json > /dev/null; then
+              echo "::error::sync-standards.local.json must be an object with only an optional boolean autoSync, an optional payload of \"core\" or \"bun\", and an optional non-empty single-line string ref"
+              exit 1
+            fi
+            auto_sync=$(jq -r 'if has("autoSync") then .autoSync else true end' sync-standards.local.json)
+            payload=$(jq -r 'if has("payload") then .payload else "bun" end' sync-standards.local.json)
+            ref=$(jq -r 'if has("ref") then .ref else "" end' sync-standards.local.json)
+            present=true
+          else
+            auto_sync=true
+            payload=bun
+            ref=
+            present=false
+          fi
+          {
+            echo "auto-sync=$auto_sync"
+            echo "payload=$payload"
+            echo "present=$present"
+            echo "ref=$ref"
+          } >> "$GITHUB_OUTPUT"
+
+  sync:
+    # Repository/organization variable; empty keeps repository-scoped secrets.
+    # See the standards-sync skill reference for environment-scoped bootstrap.
+    environment: ${{ vars.CI_SECRETS_ENVIRONMENT }}
+    needs: policy
+    if: needs.policy.outputs.auto-sync != 'false'
+    # The job token only reads: it fetches the sync branch and checks whether
+    # an open pull request still uses it. The broker App tokens do all writes.
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ${{ vars.CI_CODEBUILD_PROJECT != '' && format('codebuild-{0}-{1}-{2}-small', vars.CI_CODEBUILD_PROJECT, github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A Bun consumer runs the standards CLI its lockfile pins. Any other
+      # consumer has no installed CLI, so it runs the CLI from the standards
+      # commit this run syncs from, and the CLI always matches the content it
+      # mirrors. Resolve a branch or tag once: if it moved between this fetch
+      # and the sync, an older CLI would mirror newer content.
+      - name: Fetch trusted standards CLI source
+        id: standards-source
+        if: needs.policy.outputs.payload == 'core'
+        env:
+          SYNC_POLICY_REF: ${{ needs.policy.outputs.ref }}
+        run: |
+          upstream="$(jq -er '.upstream | strings' sync-standards.json)" || upstream=
+          repository="${upstream#github:}"
+          if [[ ! "$upstream" =~ ^github:[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$ ]] || [[ "$repository" == */. || "$repository" == */.. ]]; then
+            echo "::error::sync-standards.json must name a github:owner/repo upstream to fetch the standards CLI from"
+            exit 1
+          fi
+          url="https://github.com/$repository.git"
+          if [ -z "$SYNC_POLICY_REF" ]; then
+            ref=HEAD
+          elif [[ "$SYNC_POLICY_REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+            ref="$SYNC_POLICY_REF"
+          else
+            echo "::error::The sync policy ref $SYNC_POLICY_REF can't be fetched as a branch, tag, or commit"
+            exit 1
+          fi
+          git() { command git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"; }
+          source=$(mktemp -d "$RUNNER_TEMP/standards-source.XXXXXX")
+          git init --quiet "$source"
+          git -C "$source" fetch --quiet --depth=1 --no-tags -- "$url" "$ref"
+          rev=$(git -C "$source" rev-parse --verify 'FETCH_HEAD^{commit}')
+          git -C "$source" checkout --quiet --detach "$rev"
+          if ! package_manager="$(jq -er '.packageManager | select(type == "string" and test("^bun@(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))' "$source/package.json")"; then
+            echo "::error::The standards package.json at $rev must pin an exact bun@x.y.z packageManager"
+            exit 1
+          fi
+          echo "bun-version=${package_manager#bun@}" >> "$GITHUB_OUTPUT"
+          {
+            echo "STANDARDS_SYNC_REV=$rev"
+            echo "STANDARDS_SYNC_SOURCE=$source"
+          } >> "$GITHUB_ENV"
+
+      # The core payload runs the CLI under the Bun its own source declares.
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ steps.standards-source.outputs.bun-version || '1.4.5' }}
+
+      - name: Install dependencies
+        if: needs.policy.outputs.payload == 'bun'
+        run: bun install --frozen-lockfile
+
+      # A consumer can receive this canonical workflow before upgrading its
+      # repo-owned package manifest. Fail before sync with an upgrade message
+      # instead of letting an older CLI fail on the payload manifest (before
+      # 0.34.0) or on the one-file Dependabot config (0.34.0) with a message
+      # that doesn't say to upgrade.
+      - name: Require compatible standards CLI
+        if: needs.policy.outputs.payload == 'bun'
+        env:
+          MINIMUM_STANDARDS_VERSION: "0.35.0"
+        run: |
+          package_path=node_modules/@davidvornholt/standards/package.json
+          installed_version=$(jq -er '.version | select(type == "string")' "$package_path")
+          if [[ ! "$installed_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Installed @davidvornholt/standards version is not a stable SemVer: $installed_version"
+            exit 1
+          fi
+          lowest_version=$(printf '%s\n%s\n' "$MINIMUM_STANDARDS_VERSION" "$installed_version" | sort -V | head -n 1)
+          if [ "$lowest_version" != "$MINIMUM_STANDARDS_VERSION" ]; then
+            echo "::error::Canonical managed-file checks require @davidvornholt/standards >= $MINIMUM_STANDARDS_VERSION; upgrade package.json and bun.lock before accepting this workflow"
+            exit 1
+          fi
+
+      # Preserve the CLI before checking out a reusable branch. That branch can
+      # change package scripts, Bun configuration, and dependencies. Without a
+      # Bun workspace, install the CLI's production dependencies into the
+      # fetched standards source, outside the workspace, from its own lockfile.
+      - name: Preserve trusted sync runtime
+        env:
+          SYNC_PAYLOAD: ${{ needs.policy.outputs.payload }}
+        run: |
+          runtime=$(mktemp -d "$RUNNER_TEMP/standards-sync.XXXXXX")
+          if [ "$SYNC_PAYLOAD" = core ]; then
+            (
+              cd "$STANDARDS_SYNC_SOURCE"
+              bun install --frozen-lockfile --filter @davidvornholt/standards --production --ignore-scripts
+            )
+          else
+            # Bun isolated packages resolve dependencies through their real
+            # store paths. Keep that internal symlink graph in the independent
+            # copy.
+            cp -a node_modules "$runtime/node_modules"
+          fi
+          cp sync-standards.json "$runtime/sync-standards.json"
+          if [ -f sync-standards.local.json ]; then
+            jq -cS . sync-standards.local.json > "$runtime/policy.json"
+          else
+            echo '{}' > "$runtime/policy.json"
+          fi
+          printf '' > "$runtime/bunfig.toml"
+          echo "STANDARDS_SYNC_RUNTIME=$runtime" >> "$GITHUB_ENV"
+
+      # Resolve through the action from the trusted pre-sync checkout. Sync
+      # replaces managed files, including this action, so no local action may
+      # execute after the mirror changes. The App credentials are step outputs
+      # passed only to the mint steps, never job environment variables.
+      - name: Resolve broker App client ID
+        id: broker-app-client-id
+        uses: ./.github/actions/sops-secret
+        with:
+          age-key: ${{ secrets.SOPS_AGE_KEY }}
+          secret-file: secrets/ci.yaml
+          secret-key: broker_app.client_id
+
+      - name: Resolve broker App private key
+        id: broker-app-private-key
+        uses: ./.github/actions/sops-secret
+        with:
+          age-key: ${{ secrets.SOPS_AGE_KEY }}
+          secret-file: secrets/ci.yaml
+          secret-key: broker_app.private_key
+
+      # Mint every token before sync as a cheap, fail-closed permission check,
+      # but expose each one only to the post-sync operation that needs it.
+      # The writer and the merge token need GitHub's separate Workflows grant
+      # because canonical files include .github/workflows/**; Contents write
+      # alone cannot push or merge those files.
+      - name: Mint current-repository branch writer token
+        id: branch-writer-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ steps.broker-app-client-id.outputs.value }}
+          private-key: ${{ steps.broker-app-private-key.outputs.value }}
+          # Omitting owner and repositories is the action's exact
+          # current-repository scope; never derive either from event payload.
+          permission-contents: write
+          permission-workflows: write
+
+      - name: Mint current-repository PR token
+        id: pr-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ steps.broker-app-client-id.outputs.value }}
+          private-key: ${{ steps.broker-app-private-key.outputs.value }}
+          # Omitting owner and repositories is the action's exact
+          # current-repository scope; never derive either from event payload.
+          permission-contents: read
+          permission-pull-requests: write
+
+      - name: Mint current-repository merge token
+        id: merge-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ steps.broker-app-client-id.outputs.value }}
+          private-key: ${{ steps.broker-app-private-key.outputs.value }}
+          # Omitting owner and repositories is the action's exact
+          # current-repository scope; never derive either from event payload.
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      # Rebase the branch of the open sync PR so maintainer seam edits survive.
+      # Without an open PR, no review depends on that history: a closed or
+      # merged PR leaves its branch behind for recovery, and rebasing it onto
+      # a newer base conflicts on the files every sync rewrites. Rebuild the
+      # branch from the base instead. A concurrent push is guarded by the
+      # exact head lease in the writer step.
+      - name: Prepare reusable sync branch
+        id: sync-base
+        env:
+          SYNC_BASE_REF: ${{ github.ref_name }}
+          SYNC_READ_TOKEN: ${{ github.token }}
+        run: |
+          git() { command git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgsign=false "$@"; }
+          branch=standards-sync/update
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local credential.helper "!f() { echo username=x-access-token; echo \"password=\$SYNC_READ_TOKEN\"; }; f"
+          trap 'git config --unset credential.helper' EXIT
+          git fetch --no-tags origin "$SYNC_BASE_REF"
+          start=$(git rev-parse HEAD)
+          previous=$(git ls-remote --heads origin "refs/heads/$branch" | cut -f1)
+          open=
+          if [ -n "$previous" ]; then
+            open=$(GH_TOKEN="$SYNC_READ_TOKEN" gh pr list --state open --head "$branch" --limit 1000 --json number,headRefName,isCrossRepository --jq '[.[] | select((.isCrossRepository | not) and .headRefName == "standards-sync/update")][0].number // empty')
+          fi
+          rebuild=
+          manual=false
+          if [ -n "$open" ]; then
+            git fetch --no-tags origin "refs/heads/$branch"
+            # Commits the bot both authored and committed hold only content
+            # the next sync rewrites, so a rebuild may drop them, and the PR
+            # may merge them without review. A hand rebase makes the
+            # maintainer the committer. A clean merge from the base branch,
+            # which Standards auto-merge writes to keep the PR up to date, adds
+            # nothing a rebuild from the base lacks.
+            bot="$(git config user.name) <$(git config user.email)>"
+            # Steps run without pipefail, so a failed log must stop the step
+            # here rather than reach the loop as an empty list.
+            commits=$(git log --format='%H%x09%an <%ae>%x09%cn <%ce>%x09%P' "origin/$SYNC_BASE_REF..$previous")
+            foreign=$(while IFS=$'\t' read -r commit author committer parents; do
+              read -r first second extra <<<"$parents"
+              if [ -n "$second" ] && [ -z "$extra" ] \
+                && git merge-base --is-ancestor "$second" "origin/$SYNC_BASE_REF" \
+                && merged=$(git merge-tree --write-tree "$first" "$second") \
+                && [ "$merged" = "$(git rev-parse "$commit^{tree}")" ]; then
+                continue
+              fi
+              if [ "$author" != "$bot" ] || [ "$committer" != "$bot" ] || [ -n "$second" ]; then
+                echo "$commit"
+                echo "Commit $commit on $branch: author $author, committer $committer, parents $parents" >&2
+              fi
+            done <<<"$commits")
+            git switch -c "$branch" "$previous"
+            if ! git rebase "origin/$SYNC_BASE_REF"; then
+              git rebase --abort
+              if [ -n "$foreign" ]; then
+                echo "::error::Standards sync PR #$open conflicts with $SYNC_BASE_REF, and $branch has commits the sync bot did not write: $(paste -sd ' ' <<<"$foreign"). Rebase $branch onto $SYNC_BASE_REF and push it, or close PR #$open so the next run rebuilds the branch from $SYNC_BASE_REF."
+                exit 1
+              fi
+              echo "::notice::Standards sync PR #$open conflicts with $SYNC_BASE_REF, and only the sync bot wrote $branch; rebuilding it from $SYNC_BASE_REF and replacing $previous in PR #$open."
+              rebuild=true
+            elif [ -n "$foreign" ]; then
+              echo "::notice::$branch has commits the sync bot did not write: $(paste -sd ' ' <<<"$foreign"). Standards sync PR #$open stays manual."
+              manual=true
+            fi
+          else
+            if [ -n "$previous" ]; then
+              echo "::notice::No open pull request uses $branch; rebuilding it from $SYNC_BASE_REF instead of reusing $previous."
+            fi
+            rebuild=true
+          fi
+          if [ -n "$rebuild" ]; then
+            git switch -C "$branch" "$start"
+          fi
+          {
+            echo "previous=$previous"
+            echo "manual=$manual"
+          } >> "$GITHUB_OUTPUT"
+
+      # Forward the validated policy pin explicitly as a second fail-closed
+      # boundary. The CLI also reads and validates the same document, so local
+      # init/sync commands and this workflow retain one policy owner. The
+      # broker tokens are action outputs, not ambient variables, so the sync
+      # engine and fetched canonical content never receive them.
+      - name: Sync canonical files from upstream
+        env:
+          SYNC_PAYLOAD: ${{ needs.policy.outputs.payload }}
+          SYNC_POLICY_REF: ${{ needs.policy.outputs.ref }}
+        run: |
+          trusted_source="$(jq -er '.upstream | strings | select(length > 0)' "$STANDARDS_SYNC_RUNTIME/sync-standards.json")"
+          branch_source="$(jq -er '.upstream | strings | select(length > 0)' sync-standards.json)"
+          if [ -f sync-standards.local.json ]; then
+            branch_policy="$(jq -cS . sync-standards.local.json)"
+          else
+            branch_policy='{}'
+          fi
+          if [[ "$branch_source" != "$trusted_source" || "$branch_policy" != "$(cat "$STANDARDS_SYNC_RUNTIME/policy.json")" ]]; then
+            echo "::error::The reusable sync branch changes source authority or sync policy; review and merge that policy change separately before retrying."
+            exit 1
+          fi
+          cd "$STANDARDS_SYNC_RUNTIME"
+          if [ "$SYNC_PAYLOAD" = core ]; then
+            cli=(bun --no-env-file "$STANDARDS_SYNC_SOURCE/packages/standards-cli/src/cli.ts")
+            ref="$STANDARDS_SYNC_REV"
+          else
+            cli=(bun --no-env-file node_modules/@davidvornholt/standards/src/cli.ts)
+            ref="$SYNC_POLICY_REF"
+          fi
+          if [ -n "$ref" ]; then
+            "${cli[@]}" sync --from "$trusted_source" --dir "$GITHUB_WORKSPACE" --ref "$ref"
+          else
+            "${cli[@]}" sync --from "$trusted_source" --dir "$GITHUB_WORKSPACE"
+          fi
+
+      # Nothing else raises the consumer's exact CLI pin, and a pin left far
+      # behind can't read newer canonical content. So each sync raises it to
+      # the newest npm release, and the refresh below records that release in
+      # bun.lock. This job still ran the CLI preserved above; the new release
+      # first runs in the sync PR's required checks, so a release that breaks
+      # the consumer holds the PR open with a red check. A `ref` policy holds
+      # the content at an older commit the newest CLI may not read, so it holds
+      # the pin too. No release-age hold as in Dependabot: the release comes
+      # from the upstream whose content this sync mirrors without one. A
+      # failed registry read only skips the raise until the next run.
+      - name: Raise standards CLI pin
+        id: cli-pin
+        if: needs.policy.outputs.payload == 'bun' && needs.policy.outputs.ref == ''
+        run: |
+          set -o pipefail
+          name=@davidvornholt/standards
+          stable='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if ! latest=$(curl --fail --silent --show-error --max-time 60 "https://registry.npmjs.org/-/package/${name/\//%2F}/dist-tags" | jq -er '.latest | strings'); then
+            echo "::warning::Could not read the newest $name release from npm, so this sync leaves its pin in package.json as it is."
+            exit 0
+          fi
+          if [[ ! "$latest" =~ $stable ]]; then
+            echo "::warning::The newest $name release on npm is not a stable SemVer: $latest. This sync leaves its pin in package.json as it is."
+            exit 0
+          fi
+          current=$(jq -r --arg name "$name" '.devDependencies[$name] // empty' package.json)
+          if [[ ! "$current" =~ $stable ]]; then
+            echo "::notice::package.json doesn't pin $name to an exact release (\"$current\"), so this sync leaves it as it is."
+            exit 0
+          fi
+          if [ "$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -n 1)" = "$current" ]; then
+            echo "package.json already pins $name $current, the newest release or later."
+            exit 0
+          fi
+          jq --indent 2 --arg name "$name" --arg version "$latest" '.devDependencies[$name] = $version' package.json > "$RUNNER_TEMP/package.json"
+          mv "$RUNNER_TEMP/package.json" package.json
+          echo "Raised $name in package.json from $current to $latest."
+          {
+            echo "from=$current"
+            echo "to=$latest"
+          } >> "$GITHUB_OUTPUT"
+
+      # Canonical package manifests can change dependency ranges, and the step
+      # above can raise the CLI pin, after the frozen pre-sync install. Refresh
+      # the consumer lock before deciding whether the mirror produced a change,
+      # so the sync branch remains installable with --frozen-lockfile. Bun
+      # reads the trusted empty config only as `--config=<path>`: a separate
+      # path argument becomes a package to add, and the branch's own
+      # bunfig.toml loads instead.
+      - name: Refresh consumer lockfile
+        if: needs.policy.outputs.payload == 'bun'
+        run: bun install --lockfile-only --ignore-scripts --no-env-file --config="$STANDARDS_SYNC_RUNTIME/bunfig.toml"
+
+      - name: Detect mirror changes
+        id: mirror
+        env:
+          SYNC_BASE_REF: ${{ github.ref_name }}
+        run: |
+          if [ -z "$(git status --porcelain)" ] && git diff --quiet "origin/$SYNC_BASE_REF"; then
+            echo "Already in sync with upstream standards; nothing to open."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # This workflow deliberately runs no inline `bun run check`: the synced
+      # result is validated by the required Standards gate on the PR it opens,
+      # like any other change. An inline gate would duplicate the gate's
+      # environment (services, browsers) into a second canonical file forever,
+      # and its failure would withhold the PR exactly when upstream breaking a
+      # consumer most needs to be visible — an open PR with a red required
+      # check is the signal, and branch protection keeps it unmergeable.
+      #
+      - name: Commit and push mirror changes
+        id: sync-branch
+        if: steps.mirror.outputs.changed == 'true'
+        env:
+          BRANCH_WRITER_TOKEN: ${{ steps.branch-writer-token.outputs.token }}
+          EXPECTED_SYNC_HEAD: ${{ steps.sync-base.outputs.previous }}
+        run: |
+          git() { command git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgsign=false "$@"; }
+          branch=standards-sync/update
+          git config --local credential.helper "!f() { echo username=x-access-token; echo \"password=\$BRANCH_WRITER_TOKEN\"; }; f"
+          trap 'git config --unset credential.helper' EXIT
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: sync standards from upstream"
+          fi
+          git push --force-with-lease="refs/heads/$branch:$EXPECTED_SYNC_HEAD" --set-upstream origin "$branch"
+          {
+            echo "branch=$branch"
+            echo "head=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+      # The description becomes the squash commit body, so every run that
+      # changes the mirror regenerates it from the base and branch locks. It
+      # holds no broker token: the read-only job token reads the public upstream
+      # comparison, and a failed comparison drops only the commit list. Commit
+      # subjects and paths reach the file through jq and printf arguments only.
+      # The CLI pin comes from the base and branch manifests, not from the raise
+      # step, because an earlier run may have raised it on a reused branch.
+      - name: Describe sync pull request
+        if: steps.mirror.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYNC_BASE_REF: ${{ github.ref_name }}
+        run: |
+          set -o pipefail
+          git() { command git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"; }
+          sha_pattern='^[0-9a-f]{40}$'
+          commit_limit=30
+          path_limit=50
+          upstream="$(jq -er '.upstream | strings | select(length > 0)' "$STANDARDS_SYNC_RUNTIME/sync-standards.json")"
+          repo=
+          if [[ "$upstream" =~ ^github:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$ ]]; then
+            repo=${BASH_REMATCH[1]}
+          fi
+          source=${repo:-$upstream}
+          current=$(jq -r '.sha // empty' sync-standards.lock)
+          if [[ ! "$current" =~ $sha_pattern ]]; then
+            echo "::error::sync-standards.lock does not record the synced upstream commit"
+            exit 1
+          fi
+          previous=$(git show "origin/$SYNC_BASE_REF:sync-standards.lock" 2>/dev/null | jq -r '.sha // empty' 2>/dev/null || true)
+          [[ "$previous" =~ $sha_pattern ]] || previous=
+          paths=$(git diff --name-only -z "origin/$SYNC_BASE_REF" HEAD | jq -Rs 'split("\u0000") | map(select(length > 0))')
+          stable='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          pin() { git show "$1:package.json" 2>/dev/null | jq -r '.devDependencies["@davidvornholt/standards"] // empty' 2>/dev/null || true; }
+          pin_before=$(pin "origin/$SYNC_BASE_REF")
+          pin_after=$(pin HEAD)
+          raised=
+          if [[ "$pin_before" =~ $stable && "$pin_after" =~ $stable && "$pin_before" != "$pin_after" ]]; then
+            raised=true
+          fi
+          bun_pin() { git show "$1:package.json" 2>/dev/null | jq -r '.packageManager // empty | strings | ltrimstr("bun@")' 2>/dev/null || true; }
+          bun_before=$(bun_pin "origin/$SYNC_BASE_REF")
+          bun_after=$(bun_pin HEAD)
+          bun_raised=
+          managed='[]'
+          if [[ "$bun_before" =~ $stable && "$bun_after" =~ $stable && "$bun_before" != "$bun_after" ]]; then
+            bun_raised=true
+            managed=$({ git show "origin/$SYNC_BASE_REF:sync-standards.lock" 2>/dev/null || true; cat sync-standards.lock; } | jq -cs '[.[] | .files // {} | keys[]] | unique')
+          fi
+          # The root manifest and bun.lock are never mirrored, so a raised pin
+          # alone changes no mirrored file. A Bun raise edits files the lock
+          # doesn't list, so then only locked files count as mirrored.
+          mirrored=$(jq --arg raised "$raised" --arg bun "$bun_raised" --argjson managed "$managed" '[.[] | select(. != "sync-standards.lock" and ($raised == "" or (. != "package.json" and . != "bun.lock")) and (. as $path | $bun == "" or ($managed | index($path))))] | length' <<<"$paths")
+          compare_url=
+          commits=
+          if [ -n "$previous" ] && [ "$previous" != "$current" ] && [ -n "$repo" ]; then
+            compare_url="https://github.com/$repo/compare/$previous...$current"
+            # Upstream issue numbers would otherwise link to this repository.
+            if ! commits=$(gh api "repos/$repo/compare/$previous...$current" | jq -r --arg repo "$repo" --argjson limit "$commit_limit" '
+              ((.total_commits // (.commits | length)) - ([.commits[-$limit:][]] | length)) as $earlier
+              | (if $earlier > 0 then "- Earlier commits not listed here: \($earlier)." else empty end),
+                (.commits[-$limit:][] | "- " + (.commit.message | split("\n")[0] | gsub("(?<![\\w/])#(?<n>[0-9]+)"; "\($repo)#\(.n)")))'); then
+              echo "::warning::Could not list upstream commits. The description links to the comparison instead."
+              commits=
+            fi
+          fi
+          if [ -z "$previous" ]; then
+            before="\`sync-standards.lock\` on the base branch does not say which upstream commit this repository mirrors."
+          elif [ "$previous" = "$current" ] && [ "$mirrored" -eq 0 ] && ! jq -e 'any(.[]; . == "sync-standards.lock")' <<<"$paths" > /dev/null; then
+            before="This repository already mirrors \`$source\` at \`${current:0:7}\`."
+          elif [ "$previous" = "$current" ]; then
+            before="\`sync-standards.lock\` already points to \`$source\` at \`${current:0:7}\`, but"
+            if [ "$mirrored" -eq 0 ]; then
+              before="$before its list of mirrored files is out of date."
+            else
+              before="$before some mirrored files here no longer match that commit."
+            fi
+          else
+            before="This repository mirrors \`$source\` at \`${previous:0:7}\`. Upstream is now at \`${current:0:7}\`."
+            if [ "$mirrored" -eq 0 ]; then
+              before="$before None of the new upstream changes affect the files mirrored here."
+            else
+              before="$before Some files mirrored here are out of date."
+            fi
+          fi
+          # shellcheck disable=SC2016 # Markdown backticks in printf formats are literal on purpose.
+          {
+            printf '**Before.** %s\n\n' "$before"
+            if [ "$mirrored" -eq 0 ]; then
+              printf '**Now.** `sync-standards.lock` points to `%s`. No mirrored files change.\n' "${current:0:7}"
+            else
+              printf '**Now.** The mirrored files match `%s` at `%s`.\n' "$source" "${current:0:7}"
+            fi
+            if [ -n "$raised" ]; then
+              printf '\n**CLI.** This sync also raises `@davidvornholt/standards` in `package.json` from `%s` to `%s` and updates `bun.lock` to match. The sync run itself used `%s`, so the required checks on this pull request are the first to run `%s`. If they fail, the new release may be the cause. This pull request does not merge until they pass.\n' "$pin_before" "$pin_after" "$pin_before" "$pin_after"
+            fi
+            if [ -n "$bun_raised" ]; then
+              printf '\n**Bun.** This sync also raises the Bun pins here, such as `packageManager`, `BUN_VERSION`, `bun-version`, and `oven/bun` image tags and digests, from `%s` to `%s`, the Bun that `%s` at `%s` runs. The required checks on this pull request are the first to run Bun `%s` here. This pull request does not merge until they pass.\n' "$bun_before" "$bun_after" "$source" "${current:0:7}" "$bun_after"
+            fi
+            if [ -n "$compare_url" ]; then
+              printf '\n## Upstream changes\n\n[Compare `%s...%s`](%s)\n' "${previous:0:7}" "${current:0:7}" "$compare_url"
+              if [ -n "$commits" ]; then
+                printf '\n%s\n' "$commits"
+              fi
+            fi
+            if [ "$mirrored" -gt 0 ]; then
+              printf '\n## Changed files\n\n'
+              jq -r --argjson limit "$path_limit" '(.[:$limit][] | "- `\(.)`"), (if length > $limit then "- Files not listed here: \(length - $limit)." else empty end)' <<<"$paths"
+            fi
+            if jq -e 'any(.[]; . == ".github/settings.json")' <<<"$paths" > /dev/null; then
+              printf '\n## Before merging\n\nThis sync changes `.github/settings.json`. The `check` job fails until GitHub uses the new settings. To apply them, run `bun standards github --apply` on this branch while `gh` is logged in as a repository admin. Then re-run the `check` job.\n'
+            fi
+            printf '\n## Verification\n\n### Completed checks\n\n- The [`Standards sync` run](%s) that wrote this description ran no checks. The required checks on this pull request test the synced files. Each sync run that changes the mirrored files rewrites this description.\n' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > "$RUNNER_TEMP/standards-sync-pr-body.md"
+
+      # The workflow owns the `standards-sync/` branch namespace and keeps one
+      # open sync PR, from `standards-sync/update`. A sync mirrors the complete
+      # canonical state, so that PR supersedes every other open same-repository
+      # PR in the namespace. When the base branch already matches upstream,
+      # all of them are superseded. Closing keeps each head branch for
+      # recovery, and a failed close fails the job.
+      #
+      # `gh pr create` is left to default `--base` to the repository's default
+      # branch: the `schedule` event carries no payload, so expressions like
+      # `github.event.repository.default_branch` are empty here. Only the
+      # non-secret branch name crosses from the writer-token process.
+      - name: Reconcile sync pull requests
+        id: reconcile
+        env:
+          GH_TOKEN: ${{ steps.pr-token.outputs.token }}
+          MIRROR_CHANGED: ${{ steps.mirror.outputs.changed }}
+        run: |
+          open=$(gh pr list --state open --limit 1000 --json number,headRefName,isCrossRepository --jq '[.[] | select((.isCrossRepository | not) and (.headRefName | startswith("standards-sync/")))]')
+          current=
+          created=false
+          if [ "$MIRROR_CHANGED" = true ]; then
+            current=$(jq -r '[.[] | select(.headRefName == "standards-sync/update")][0].number // empty' <<<"$open")
+            if [ -n "$current" ]; then
+              gh pr edit "$current" --body-file "$RUNNER_TEMP/standards-sync-pr-body.md"
+              echo "Updated existing standards sync PR #$current"
+            else
+              url=$(gh pr create \
+                --head "${{ steps.sync-branch.outputs.branch }}" \
+                --title "chore: sync standards from upstream" \
+                --body-file "$RUNNER_TEMP/standards-sync-pr-body.md")
+              current=${url##*/}
+              created=true
+            fi
+            comment="Superseded by #$current, the current standards sync pull request."
+          else
+            comment="Closed because the base branch already matches the upstream standards."
+          fi
+          superseded=$(jq -r --arg current "$current" '.[] | select((.number | tostring) != $current) | .number' <<<"$open")
+          for number in $superseded; do
+            gh pr close "$number" --comment "$comment"
+            echo "Closed superseded standards sync PR #$number"
+          done
+          {
+            echo "number=$current"
+            echo "created=$created"
+          } >> "$GITHUB_OUTPUT"
+
+      # The sync PR merges itself once its required checks pass, so `check`
+      # stays its only gate. A failing check, such as one that waits for
+      # `github --apply` after a settings change, holds it open as before. The
+      # broker App enables auto-merge because a merge by the workflow token
+      # would start no push run on the base branch. Standards auto-merge keeps
+      # the branch up to date after later pushes to the base branch.
+      #
+      # Only the run that opens the sync PR turns auto-merge on, at the head it
+      # pushed, so a reused PR keeps its auto-merge as it is. Commits the sync
+      # bot did not write need review: a run that finds them never turns
+      # auto-merge on, and turns off the auto-merge the App turned on in case
+      # Standards auto-merge missed the push. A person merges the PR or turns
+      # auto-merge back on.
+      - name: Enable sync pull request auto-merge
+        if: steps.mirror.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.merge-token.outputs.token }}
+          APP_SLUG: ${{ steps.merge-token.outputs.app-slug }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_REF: ${{ github.ref_name }}
+          PR_NUMBER: ${{ steps.reconcile.outputs.number }}
+          PR_CREATED: ${{ steps.reconcile.outputs.created }}
+          SYNC_HEAD: ${{ steps.sync-branch.outputs.head }}
+          SYNC_MANUAL: ${{ steps.sync-base.outputs.manual }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "::error::Reconcile sync pull requests reported no current pull request"
+            exit 1
+          fi
+          if [ "$SYNC_MANUAL" = true ]; then
+            enabled_by=$(gh pr view "$PR_NUMBER" --json autoMergeRequest --jq '.autoMergeRequest.enabledBy.login // ""')
+            if [ "$enabled_by" = "$APP_SLUG" ]; then
+              gh pr merge "$PR_NUMBER" --disable-auto
+              echo "Turned auto-merge off for standards sync PR #$PR_NUMBER"
+            else
+              echo "Standards sync PR #$PR_NUMBER has commits the sync bot did not write, so the App leaves its auto-merge as it is."
+            fi
+          elif [ "$PR_CREATED" = true ]; then
+            # gh merges a pull request that nothing holds at once, so auto-merge
+            # starts only where an active rule on the base branch requires
+            # `check`.
+            # shellcheck disable=SC2016 # GraphQL variables in the query are literal on purpose.
+            allowed=$(gh api graphql -f owner="${REPOSITORY%/*}" -f name="${REPOSITORY#*/}" \
+              -f query='query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { autoMergeAllowed } }' \
+              --jq '.data.repository.autoMergeAllowed')
+            if [ "$allowed" != true ]; then
+              echo "This repository doesn't allow auto-merge, so standards sync PR #$PR_NUMBER stays manual."
+              exit 0
+            fi
+            # A plan without rulesets refuses this read with a 403, even where
+            # the repository still allows auto-merge. Any other failure stops here.
+            if ! required=$(gh api "repos/$REPOSITORY/rules/branches/$BASE_REF" --paginate \
+              --jq '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context' 2>&1); then
+              grep -qF 'Upgrade to GitHub Pro' <<<"$required" || { echo "$required" >&2; exit 1; }
+              # A refused read proves nothing, whatever an earlier page listed.
+              required=''
+            fi
+            if grep -qx check <<<"$required"; then
+              gh pr merge "$PR_NUMBER" --auto --squash --match-head-commit "$SYNC_HEAD"
+              echo "Enabled auto-merge for standards sync PR #$PR_NUMBER"
+            else
+              echo "No active rule on $BASE_REF requires check, so standards sync PR #$PR_NUMBER stays manual."
+            fi
+          else
+            echo "An earlier run opened standards sync PR #$PR_NUMBER, so the App leaves its auto-merge as it is."
+          fi

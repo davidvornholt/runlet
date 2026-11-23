@@ -1,0 +1,36 @@
+---
+name: declarative-infra
+description: Use when changing hosted infrastructure, such as server NixOS configurations, OpenTofu, cloud resources, infrastructure secrets, deployments, or provider credentials, even when another repository owns them.
+---
+
+# Declarative infrastructure
+
+## Ownership and mutation
+
+Each host's infrastructure has exactly one home: the `infra/` directory of the repository it serves, or a dedicated infrastructure repository. Everything for that host changes in that home, even when the work starts in another repository.
+
+Live state changes only through the home's reviewed main-branch automation, so production always matches a reviewed commit. Running `deploy-rs`, `tofu apply`, or `nixos-rebuild switch` by hand is an emergency measure. If you do it, say so in your report.
+
+## Changing existing infrastructure
+
+Keep OpenTofu `moved` and `import` blocks in the repository after they apply, as the record of what happened. A migration or refactor is ready to merge only when its plan is a no-op.
+
+Data-bearing resources carry `prevent_destroy`, so deleting one takes two changes: the first lifts the guard, the second destroys the resource.
+
+## Validation
+
+Before pushing, run `nix flake check`, build each host's toplevel, run `tofu fmt -check`, and run `tofu init -backend=false && tofu validate`. Where credentials are available, also produce a plan.
+
+## References
+
+| Change | Reference |
+| --- | --- |
+| A new infrastructure home, host layout, PostgreSQL, Nix caching, private registry access, or host deployment | [Bootstrapping a host repo](references/bootstrap.md) |
+| SOPS identities and recipients, CI secrets, or brokered provider credentials | [Secrets bootstrap](references/secrets.md) |
+| Preview environments | [Pull request previews](references/pr-previews.md) |
+| Releasing, rolling back, or hosting a first-party app's container images | [App releases](references/app-release.md) |
+| Third-party container updates whose publisher the infrastructure owner doesn't control | [Vendor image updates](references/vendor-images.md) |
+
+Web hosts get pull request previews by default. Leaving them out takes a decision recorded in the host repository.
+
+Development environment layers and where each value is documented belong to the secrets-and-config skill.
